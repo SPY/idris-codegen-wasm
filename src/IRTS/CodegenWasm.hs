@@ -22,9 +22,10 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.UTF8 as UTF8
 import qualified Data.ByteString.Builder as BSBuilder
 
-import Idris.Core.TT (Name, Const(..), isTypeConst)
+import Idris.Core.TT (Name, Const(..), NativeTy(..), IntTy(..), ArithTy(..), isTypeConst)
 import IRTS.Bytecode
 import IRTS.CodegenCommon
+import IRTS.Lang (PrimFn(..))
 
 import Language.Wasm.Structure
 import qualified Language.Wasm.Binary as WasmBinary
@@ -82,6 +83,13 @@ mkWasm defs stackSize =
                 (const $ for (i .= i32c 0) (i `lt_u` num) (i .= (i `add` i32c 1)) $ const $ do
                     store (stackTop `add` (i `mul` i32c 4)) (i32c 0) 0 0
                 )
+        slide <- fun $ do
+            n <- param i32
+            i <- local i32
+            for (i .= i32c 0) (i `lt_u` n) (i .= (i `add` i32c 1)) $ const $ do
+                let source = load i32 (stackTop `add` (i `mul` i32c 4)) 0 2
+                let dist = stackBase `add` (i `mul` i32c 4)
+                store source dist 0 2
         defsStartFrom <- nextFuncIndex
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -92,6 +100,7 @@ mkWasm defs stackSize =
                 tmpIdx = tmpReg,
                 allocFn = alloc,
                 reserveFn = reserve,
+                slideFn = slide,
                 symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
@@ -121,7 +130,8 @@ data GlobalBindings = GB {
     tmpIdx :: Glob I32,
     symbols :: Map.Map Name Natural,
     reserveFn :: Natural,
-    allocFn :: Natural
+    allocFn :: Natural,
+    slideFn :: Natural
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -142,6 +152,19 @@ bcToInstr (ASSIGN l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (ASSIGNCONST reg c) = const <$> (makeConst c >>= setRegVal reg)
 bcToInstr (UPDATE l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (MKCON l _ tag args) = const <$> setRegVal l (i32c 0)
+bcToInstr (CALL n) = do
+    Just fnIdx <- Map.lookup n <$> asks symbols
+    return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
+bcToInstr (TAILCALL n) = do
+    Just fnIdx <- Map.lookup n <$> asks symbols
+    return $ \(oldBase, _) -> invoke fnIdx [arg oldBase]
+bcToInstr (SLIDE 0) = return $ const $ return ()
+bcToInstr (SLIDE n) = do
+    slide <- asks slideFn
+    return $ const $ invoke slide [i32c n]
+bcToInstr REBASE = do
+    stackBase <- asks stackBaseIdx
+    return $ \(oldBase, _) -> stackBase .= oldBase
 bcToInstr (RESERVE 0) = return $ const $ return ()
 bcToInstr (RESERVE n) = do
     reserve <- asks reserveFn
@@ -169,8 +192,10 @@ bcToInstr (BASETOP n) = do
 bcToInstr STOREOLD = do
     stackBase <- asks stackBaseIdx
     return $ \(_, myOldBase) -> myOldBase .= stackBase
+bcToInstr (OP loc op args) = const <$> makeOp loc op args
+bcToInstr (NULL reg) = const <$> setRegVal reg (i32c 0)
 bcToInstr _ = return $ const $ return ()
-    
+
 getRegVal :: Reg -> WasmGen (GenFun (Proxy I32))
 getRegVal RVal = do
     idx <- asks returnValueIdx
@@ -198,6 +223,20 @@ setRegVal (L offset) val = do
 setRegVal (T offset) val = do
     idx <- asks stackTopIdx
     return $ store idx val (offset * 4) 2
+
+-- data NativeTy = IT8 | IT16 | IT32 | IT64
+-- data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
+-- data ArithTy = ATInt IntTy | ATFloat
+makeOp :: Reg -> PrimFn -> [Reg] -> WasmGen (GenFun ())
+makeOp loc (LPlus (ATInt (ITFixed IT32))) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    setRegVal loc $ add (load i32 left 8 2) (load i32 right 8 2)
+-- makeOp loc (LPlus ATFloat) [l, r] = do
+--     left <- getRegVal l
+--     right <- getRegVal r
+--     setRegVal loc $ add (load f64 left 8 2) (load f64 right 8 2)
+makeOp _ _ _ = return $ return ()
 
 asAddr :: WasmGen Word32 -> WasmGen (GenFun (Proxy I32))
 asAddr expr = do
