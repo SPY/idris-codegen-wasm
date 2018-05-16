@@ -146,6 +146,26 @@ bcToInstr (RESERVE 0) = return $ const $ return ()
 bcToInstr (RESERVE n) = do
     reserve <- asks reserveFn
     return $ const $ invoke reserve [i32c n]
+bcToInstr (ADDTOP 0) = return $ const $ return ()
+bcToInstr (ADDTOP n) = do
+    stackTop <- asks stackTopIdx
+    return $ const $ stackTop .= (stackTop `add` i32c (n * 4))
+bcToInstr (TOPBASE 0) = do
+    stackBase <- asks stackBaseIdx
+    stackTop <- asks stackTopIdx
+    return $ const $ stackTop .= stackBase
+bcToInstr (TOPBASE n) = do
+    stackBase <- asks stackBaseIdx
+    stackTop <- asks stackTopIdx
+    return $ const $ stackTop .= (stackBase `add` i32c (n * 4))
+bcToInstr (BASETOP 0) = do
+    stackBase <- asks stackBaseIdx
+    stackTop <- asks stackTopIdx
+    return $ const $ stackBase .= stackTop
+bcToInstr (BASETOP n) = do
+    stackBase <- asks stackBaseIdx
+    stackTop <- asks stackTopIdx
+    return $ const $ stackBase .= (stackTop `add` i32c (n * 4))
 bcToInstr STOREOLD = do
     stackBase <- asks stackBaseIdx
     return $ \(_, myOldBase) -> myOldBase .= stackBase
