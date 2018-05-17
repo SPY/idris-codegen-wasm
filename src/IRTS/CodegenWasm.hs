@@ -5,6 +5,7 @@
 {-# LANGUAGE TypeFamilies #-}
 module IRTS.CodegenWasm (codegenWasm) where
 
+import Control.Monad (forM_)
 import Control.Monad.Reader (Reader, runReader, asks)
 import Control.Monad.State (StateT, get, put, runStateT)
 import Numeric.Natural (Natural)
@@ -40,7 +41,7 @@ codegenWasm ci = do
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
 mkWasm :: [(Name, [BC])] -> Int -> Module
-mkWasm defs stackSize = 
+mkWasm defs stackSize =
     genMod $ do
         gc <- importFunction "rts" "gc" (FuncType [I32] [])
         memory 10 Nothing
@@ -64,11 +65,15 @@ mkWasm defs stackSize =
             size <- param i32
             alignedSize <- local i32
             addr <- local i32
+            i <- local i32
             alignedSize .= call i32 aligned [arg size]
             ifExpr i32 ((heapNext `add` alignedSize) `lt_u` heapEnd)
                 (const $ do
                     addr .= heapNext
                     heapNext .= (heapNext `add` alignedSize)
+                    for (i .= addr) (i `lt_u` heapNext) (i .= (i `add` i32c 4)) $ const $ do
+                        store i (i32c 0) 0 2
+                    store addr size 4 2
                     ret addr
                 )
                 (const $ do
@@ -78,10 +83,12 @@ mkWasm defs stackSize =
         reserve <- fun $ do
             num <- param i32
             i <- local i32
-            ifStmt (stackEnd `lt_u` (stackTop `add` (num `mul` i32c 4)))
+            newStackTop <- local i32
+            newStackTop .= (stackTop `add` (num `mul` i32c 4))
+            ifStmt (stackEnd `lt_u` newStackTop)
                 (const unreachable)
-                (const $ for (i .= i32c 0) (i `lt_u` num) (i .= (i `add` i32c 1)) $ const $ do
-                    store (stackTop `add` (i `mul` i32c 4)) (i32c 0) 0 0
+                (const $ for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ const $ do
+                    store i (i32c 0) 0 2
                 )
         slide <- fun $ do
             n <- param i32
@@ -151,7 +158,7 @@ bcToInstr :: BC -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
 bcToInstr (ASSIGN l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (ASSIGNCONST reg c) = const <$> (makeConst c >>= setRegVal reg)
 bcToInstr (UPDATE l r) = const <$> (getRegVal r >>= setRegVal l)
-bcToInstr (MKCON l _ tag args) = const <$> setRegVal l (i32c 0)
+bcToInstr (MKCON l _ tag args) = const <$> (genCon tag args >>= setRegVal l)
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
     return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
@@ -389,6 +396,20 @@ mkCon :: Word32 -> [Word32] -> ConVal
 mkCon tag args =
     let header = mkHdr Con (8 + 4 + 4 * length args) in
     CV { hdr = header { slot16 = fromIntegral $ length args }, tag, args }
+
+genCon :: (Integral tag) => tag -> [Reg] -> WasmGen (GenFun (Proxy I32))
+genCon tag args = do
+    let arity = length args
+    alloc <- asks allocFn
+    tmp <- asks tmpIdx
+    args' <- mapM getRegVal args
+    return $ do
+        tmp .= call i32 alloc [arg $ i32c (8 + 4 + 4 * fromIntegral arity)]
+        store8 tmp (i32c $ fromEnum Con) 0 2
+        store16 tmp (i32c tag) 2 1
+        store tmp (i32c arity) 8 2
+        forM_ (zip args' [0..]) $ \(arg, i) -> store tmp arg (8 + 4 + 4 * i) 2
+        ret tmp
 
 instance Serialize.Serialize ConVal where
     put CV { hdr, tag, args } = do
