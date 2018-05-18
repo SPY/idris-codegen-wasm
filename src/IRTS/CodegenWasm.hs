@@ -164,6 +164,9 @@ bcToInstr (UPDATE l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (MKCON l _ tag args) = const <$> (genCon tag args >>= setRegVal l)
 bcToInstr (CASE safe val branches defaultBranch) = genCase safe val branches defaultBranch
 bcToInstr (PROJECT loc offset arity) = genProject loc offset arity
+bcToInstr (PROJECTINTO dst src idx) = do
+    addr <- getRegVal src
+    const <$> setRegVal dst (load i32 addr (12 + idx * 4) 2)
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
     return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
@@ -316,6 +319,20 @@ data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
     | LCrash
 
     | LNoOp
+
+min set:
+SOp (LMinus (ATInt ITNative)) [Loc 0,Loc 1]
+SOp (LTimes (ATInt ITNative)) [Loc 0,Loc 1]
+SOp (LEq (ATInt ITNative)) [Loc 1,Loc 0]
+SOp (LSLt (ATInt ITNative)) [Loc 0,Loc 1]
+SOp (LIntStr ITNative) [Loc 0]
+SOp LStrConcat [Loc 1,Loc 2]
+SOp LWriteStr [Loc 0,Loc 1]
+SOp LStrEq [Loc 4,Loc 6]
+SOp LStrHead [Loc 4]
+SOp (LEq (ATInt ITChar)) [Loc 7,Loc 8]
+SOp (LEq (ATInt ITBig)) [Loc 0,Loc 1]
+SOp (LSLt (ATInt ITBig)) [Loc 0,Loc 1]
 -}
 -- data NativeTy = IT8 | IT16 | IT32 | IT64
 -- data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
