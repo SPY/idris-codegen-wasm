@@ -92,11 +92,14 @@ mkWasm defs stackSize =
                 )
         slide <- fun $ do
             n <- param i32
-            i <- local i32
-            for (i .= i32c 0) (i `lt_u` n) (i .= (i `add` i32c 1)) $ const $ do
-                let source = load i32 (stackTop `add` (i `mul` i32c 4)) 0 2
-                let dist = stackBase `add` (i `mul` i32c 4)
+            source <- local i32
+            dist <- local i32
+            end <- local i32
+            dist .= stackBase
+            end .= (stackTop `add` (n `mul` i32c 4))
+            for (source .= stackTop) (source `lt_u` end) (source .= (source `add` i32c 4)) $ const $ do
                 store source dist 0 2
+                dist .= (dist `add` i32c 4)
         defsStartFrom <- nextFuncIndex
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -159,6 +162,7 @@ bcToInstr (ASSIGN l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (ASSIGNCONST reg c) = const <$> (makeConst c >>= setRegVal reg)
 bcToInstr (UPDATE l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (MKCON l _ tag args) = const <$> (genCon tag args >>= setRegVal l)
+bcToInstr (CASE safe val branches defaultBranch) = genCase safe val branches defaultBranch
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
     return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
@@ -231,19 +235,118 @@ setRegVal (T offset) val = do
     idx <- asks stackTopIdx
     return $ store idx val (offset * 4) 2
 
+genCase :: Bool -> Reg -> [(Int, [BC])] -> Maybe [BC] -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genCase safe reg branches defaultBranch = do
+    addr <- getRegVal reg
+    branchesBody <- mapM toFunGen branches
+    defBody <- case defaultBranch of
+        Just code -> mapM bcToInstr code
+        Nothing -> return $ [const nop]
+    return $ \oldBases -> do
+        let defCode = sequence_ $ map ($ oldBases) defBody
+        let branchesCode = map (\(tag, code) -> (tag, code oldBases)) branchesBody
+        let conCheck = load8u i32 addr 0 2 `eq` i32c (fromEnum Con)
+        let conTag = load i32 addr 8 2
+        let conGuard body
+                | safe = body
+                | otherwise = ifStmt conCheck (const body) (const defCode)
+        let genSwitch [] = defCode
+            genSwitch ((tag, code):rest) = ifStmt (conTag `eq` i32c tag) (const code) $ const $ genSwitch rest
+        conGuard $ genSwitch branchesCode
+    where
+        toFunGen :: (Int, [BC]) -> WasmGen (Int, ((Loc I32, Loc I32) -> GenFun ()))
+        toFunGen (tag, code) = do
+            instrs <- mapM bcToInstr code
+            return $ (tag, (\oldBases -> sequence_ $ map ($ oldBases) instrs))
+
+{-
+data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
+    | LUDiv IntTy | LSDiv ArithTy | LURem IntTy | LSRem ArithTy
+    | LAnd IntTy | LOr IntTy | LXOr IntTy | LCompl IntTy
+    | LSHL IntTy | LLSHR IntTy | LASHR IntTy
+    | LEq ArithTy | LLt IntTy | LLe IntTy | LGt IntTy | LGe IntTy
+    | LSLt ArithTy | LSLe ArithTy | LSGt ArithTy | LSGe ArithTy
+    | LSExt IntTy IntTy | LZExt IntTy IntTy | LTrunc IntTy IntTy
+    | LStrConcat | LStrLt | LStrEq | LStrLen
+    | LIntFloat IntTy | LFloatInt IntTy | LIntStr IntTy | LStrInt IntTy
+    | LFloatStr | LStrFloat | LChInt IntTy | LIntCh IntTy
+    | LBitCast ArithTy ArithTy -- Only for values of equal width
+
+    | LFExp | LFLog | LFSin | LFCos | LFTan | LFASin | LFACos | LFATan
+    | LFATan2 | LFSqrt | LFFloor | LFCeil | LFNegate
+
+    | LStrHead | LStrTail | LStrCons | LStrIndex | LStrRev | LStrSubstr
+    | LReadStr | LWriteStr
+
+    -- system info
+    | LSystemInfo
+
+    | LFork
+    | LPar -- evaluate argument anywhere, possibly on another
+            -- core or another machine. 'id' is a valid implementation
+    | LExternal Name
+    | LCrash
+
+    | LNoOp
+-}
 -- data NativeTy = IT8 | IT16 | IT32 | IT64
 -- data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
 -- data ArithTy = ATInt IntTy | ATFloat
 makeOp :: Reg -> PrimFn -> [Reg] -> WasmGen (GenFun ())
-makeOp loc (LPlus (ATInt (ITFixed IT32))) [l, r] = do
+makeOp loc (LPlus (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFF) $ add l r) args
+makeOp loc (LPlus (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ add l r) args
+makeOp loc (LPlus (ATInt (ITFixed IT32))) args =
+    i32BinOp loc add args
+makeOp loc (LPlus (ATInt ITNative)) args =
+    i32BinOp loc add args
+makeOp loc (LPlus (ATInt ITChar)) args =
+    i32BinOp loc add args
+makeOp loc (LPlus ATFloat) args = f64BinOp loc add args
+makeOp loc (LMinus (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFF) $ sub l r) args
+makeOp loc (LMinus (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ sub l r) args
+makeOp loc (LMinus (ATInt (ITFixed IT32))) args =
+    i32BinOp loc sub args
+makeOp loc (LMinus (ATInt ITNative)) args =
+    i32BinOp loc sub args
+makeOp loc (LMinus (ATInt ITChar)) args =
+    i32BinOp loc sub args
+makeOp loc (LMinus ATFloat) args = f64BinOp loc sub args
+makeOp loc (LTimes (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFF) $ mul l r) args
+makeOp loc (LTimes (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ mul l r) args
+makeOp loc (LTimes (ATInt (ITFixed IT32))) args =
+    i32BinOp loc mul args
+makeOp loc (LTimes (ATInt ITNative)) args =
+    i32BinOp loc mul args
+makeOp loc (LTimes (ATInt ITChar)) args =
+    i32BinOp loc mul args
+makeOp loc (LTimes ATFloat) args = f64BinOp loc mul args
+makeOp _ _ _ = return $ return ()
+
+i32BinOp :: Reg
+    -> (GenFun (Proxy I32) -> GenFun (Proxy I32) -> GenFun (Proxy I32))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+i32BinOp loc op [l, r] = do
     left <- getRegVal l
     right <- getRegVal r
-    setRegVal loc $ add (load i32 left 8 2) (load i32 right 8 2)
--- makeOp loc (LPlus ATFloat) [l, r] = do
---     left <- getRegVal l
---     right <- getRegVal r
---     setRegVal loc $ add (load f64 left 8 2) (load f64 right 8 2)
-makeOp _ _ _ = return $ return ()
+    ctor <- genInt
+    setRegVal loc $ ctor $ op (load i32 left 8 2) (load i32 right 8 2)
+
+f64BinOp :: Reg
+    -> (GenFun (Proxy F64) -> GenFun (Proxy F64) -> GenFun (Proxy F64))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+f64BinOp loc op [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genFloat
+    setRegVal loc $ ctor $ op (load f64 left 8 2) (load f64 right 8 2)
 
 asAddr :: WasmGen Word32 -> WasmGen (GenFun (Proxy I32))
 asAddr expr = do
@@ -317,6 +420,16 @@ data IntVal = IV { hdr :: ValHeader, val :: Int } deriving (Show, Eq)
 mkInt :: (Integral i) => i -> IntVal
 mkInt val = IV { hdr = mkHdr Int 12, val = fromIntegral val }
 
+genInt :: (Producer val, OutType val ~ Proxy I32) => WasmGen (val -> GenFun (Proxy I32))
+genInt = do
+    alloc <- asks allocFn
+    tmp <- asks tmpIdx
+    return $ \val -> do
+        tmp .= call i32 alloc [arg $ i32c (8 + 4)]
+        store8 tmp (i32c $ fromEnum Int) 0 2
+        store tmp val 8 2
+        ret tmp
+
 instance Serialize.Serialize IntVal where
     put IV { hdr, val } = do
         Serialize.put hdr
@@ -327,6 +440,16 @@ data FloatVal = FV { hdr :: ValHeader, val :: Double } deriving (Show, Eq)
 
 mkFloat :: Double -> FloatVal
 mkFloat val = FV { hdr = mkHdr Float 16, val }
+
+genFloat :: (Producer val, OutType val ~ Proxy F64) => WasmGen (val -> GenFun (Proxy I32))
+genFloat = do
+    alloc <- asks allocFn
+    tmp <- asks tmpIdx
+    return $ \val -> do
+        tmp .= call i32 alloc [arg $ i32c (8 + 8)]
+        store8 tmp (i32c $ fromEnum Float) 0 2
+        store tmp val 8 2
+        ret tmp
 
 instance Serialize.Serialize FloatVal where
     put FV { hdr, val } = do
@@ -406,8 +529,8 @@ genCon tag args = do
     return $ do
         tmp .= call i32 alloc [arg $ i32c (8 + 4 + 4 * fromIntegral arity)]
         store8 tmp (i32c $ fromEnum Con) 0 2
-        store16 tmp (i32c tag) 2 1
-        store tmp (i32c arity) 8 2
+        store16 tmp (i32c arity) 2 1
+        store tmp (i32c tag) 8 2
         forM_ (zip args' [0..]) $ \(arg, i) -> store tmp arg (8 + 4 + 4 * i) 2
         ret tmp
 
