@@ -44,6 +44,7 @@ mkWasm :: [(Name, [BC])] -> Int -> Module
 mkWasm defs stackSize =
     genMod $ do
         gc <- importFunction "rts" "gc" (FuncType [I32] [])
+        strEq <- importFunction "rts" "strEq" (FuncType [I32, I32] [I32])
         memory 10 Nothing
     
         stackStart <- global Const i32 0
@@ -111,6 +112,7 @@ mkWasm defs stackSize =
                 allocFn = alloc,
                 slideFn = slide,
                 reserveFn = reserve,
+                strEqFn = strEq,
                 symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
@@ -142,7 +144,8 @@ data GlobalBindings = GB {
     symbols :: Map.Map Name Natural,
     slideFn :: Natural,
     reserveFn :: Natural,
-    allocFn :: Natural
+    allocFn :: Natural,
+    strEqFn :: Natural
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -168,6 +171,7 @@ bcToInstr (PROJECT loc offset arity) = genProject loc offset arity
 bcToInstr (PROJECTINTO dst src idx) = do
     addr <- getRegVal src
     const <$> setRegVal dst (load i32 addr (12 + idx * 4) 2)
+bcToInstr (CONSTCASE val branches defaultBranch) = genConstCase val branches defaultBranch
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
     return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
@@ -274,6 +278,52 @@ genProject reg offset arity = do
     addr <- getRegVal reg
     return $ const $ forM_ [0..arity-1] $ \i -> do
         store stackBase (load i32 addr (12 + i * 4) 2) ((offset + i) * 4) 2
+
+genConstCase :: Reg -> [(Const, [BC])] -> Maybe [BC] -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genConstCase reg branches defaultBranch = do
+    addr <- getRegVal reg
+    branchesBody <- mapM (toFunGen addr) branches
+    defBody <- case defaultBranch of
+        Just code -> mapM bcToInstr code
+        Nothing -> return $ [const $ return ()]
+    return $ \oldBases -> do
+        let defCode = sequence_ $ map ($ oldBases) defBody
+        let branchesCode = map (\(cond, code) -> (cond, code oldBases)) branchesBody
+        let genSwitch [] = defCode
+            genSwitch ((cond, code):rest) = ifStmt cond (const code) (const $ genSwitch rest)
+        genSwitch branchesCode
+    where
+        toFunGen :: GenFun (Proxy I32) -> (Const, [BC]) -> WasmGen (GenFun (Proxy I32), ((Loc I32, Loc I32) -> GenFun ()))
+        toFunGen addr (c, code) = do
+            instrs <- mapM bcToInstr code
+            constCode <- makeConst c
+            cond <- mkConstChecker c addr constCode
+            return $ (cond, (\oldBases -> sequence_ $ map ($ oldBases) instrs))
+
+        mkConstChecker :: Const -> GenFun (Proxy I32) -> GenFun (Proxy I32) -> WasmGen (GenFun (Proxy I32))
+        mkConstChecker c val pat | intConst c = return $ eq (load i32 val 8 2) (load i32 pat 8 2)
+        mkConstChecker c val pat | int64Const c = return $ eq (load i64 val 8 2) (load i64 pat 8 2)
+        mkConstChecker c val pat | bigIntConst c = return $ eq (load i64 val 8 2) (load i64 pat 8 2)
+        mkConstChecker c val pat | strConst c = do
+            strEq <- asks strEqFn
+            return $ call i32 strEq [val, pat]
+        mkConstChecker _ _valAddr _constAddr = return $ i32c 0
+
+        intConst (I _) = True
+        intConst (Ch _) = True
+        intConst (B8 _) = True
+        intConst (B16 _) = True
+        intConst (B32 _) = True
+        intConst _ = False
+
+        int64Const (B64 _) = True
+        int64Const _ = False
+    
+        bigIntConst (BI _) = True
+        bigIntConst _ = False
+    
+        strConst (Str _) = True
+        strConst _ = False
 
 genSlide :: Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
 genSlide n = do
