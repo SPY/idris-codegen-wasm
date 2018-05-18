@@ -7,7 +7,7 @@ module IRTS.CodegenWasm (codegenWasm) where
 
 import Control.Monad (forM_)
 import Control.Monad.Reader (Reader, runReader, asks)
-import Control.Monad.State (StateT, get, put, runStateT)
+import Control.Monad.State (StateT, get, gets, put, modify, runStateT)
 import Numeric.Natural (Natural)
 import Data.Word (Word8, Word16, Word32, Word64)
 import Data.Int (Int32, Int64)
@@ -125,11 +125,12 @@ mkWasm defs stackSize =
 
 data GenState = GS {
     constSectionEnd :: Word32,
-    constSection :: BSBuilder.Builder
+    constSection :: BSBuilder.Builder,
+    strCache :: Map.Map String Word32
 }
 
 emptyState :: GenState
-emptyState = GS 0 mempty
+emptyState = GS 0 mempty mempty
 
 data GlobalBindings = GB {
     stackBaseIdx :: Glob I32,
@@ -403,7 +404,11 @@ makeConst (I i) = asAddr $ addToConstSection (mkInt i)
 makeConst (BI i) = asAddr $ addToConstSection (mkBigInt i)
 makeConst (Fl f) = asAddr $ addToConstSection (mkFloat f)
 makeConst (Ch c) = asAddr $ addToConstSection (mkInt $ Char.ord c)
-makeConst (Str s) = asAddr $ addToConstSection (mkStr s)
+makeConst (Str s) = do
+    cache <- gets strCache
+    case Map.lookup s cache of
+        Just addr -> return $ i32c addr
+        Nothing -> asAddr $ addToConstSection (mkStr s)
 makeConst (B8 w) = asAddr $ addToConstSection (mkInt w)
 makeConst (B16 w) = asAddr $ addToConstSection (mkInt w)
 makeConst (B32 w) = asAddr $ addToConstSection (mkBit32 w)
@@ -418,12 +423,14 @@ aligned sz = (fromIntegral sz + 3) .&. 0xFFFFFFFC
 addToConstSection :: (Serialize.Serialize val) => val -> WasmGen Word32
 addToConstSection val = do
     let bytes = Serialize.encodeLazy val
-    GS addr builder <- get
     let sz = fromIntegral $ LBS.length bytes
     let asz = aligned sz
-    -- alignment gap
-    let gap = BSBuilder.lazyByteString $ LBS.replicate (fromIntegral $ asz - sz) 0
-    put $ GS (addr + asz) (builder <> BSBuilder.lazyByteString bytes <> gap)
+    let alignmentGap = BSBuilder.lazyByteString $ LBS.replicate (fromIntegral $ asz - sz) 0
+    addr <- gets constSectionEnd
+    modify $ \st -> st {
+        constSectionEnd = addr + asz,
+        constSection = constSection st <> BSBuilder.lazyByteString bytes <> alignmentGap
+    }
     return addr
 
 data ValType
