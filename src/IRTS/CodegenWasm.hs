@@ -80,16 +80,6 @@ mkWasm defs stackSize =
                     invoke gc []
                     call i32 self [arg size]
                 )
-        reserve <- fun $ do
-            num <- param i32
-            i <- local i32
-            newStackTop <- local i32
-            newStackTop .= (stackTop `add` (num `mul` i32c 4))
-            ifStmt (stackEnd `lt_u` newStackTop)
-                (const unreachable)
-                (const $ for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ const $ do
-                    store i (i32c 0) 0 2
-                )
         slide <- fun $ do
             n <- param i32
             source <- local i32
@@ -100,6 +90,16 @@ mkWasm defs stackSize =
             for (source .= stackTop) (source `lt_u` end) (source .= (source `add` i32c 4)) $ const $ do
                 store source dist 0 2
                 dist .= (dist `add` i32c 4)
+        reserve <- fun $ do
+            num <- param i32
+            i <- local i32
+            newStackTop <- local i32
+            newStackTop .= (stackTop `add` (num `mul` i32c 4))
+            ifStmt (stackEnd `lt_u` newStackTop)
+                (const unreachable)
+                (const $ for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ const $ do
+                    store i (i32c 0) 0 2
+                )
         defsStartFrom <- nextFuncIndex
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -109,8 +109,8 @@ mkWasm defs stackSize =
                 returnValueIdx = retReg,
                 tmpIdx = tmpReg,
                 allocFn = alloc,
-                reserveFn = reserve,
                 slideFn = slide,
+                reserveFn = reserve,
                 symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
@@ -139,9 +139,9 @@ data GlobalBindings = GB {
     returnValueIdx :: Glob I32,
     tmpIdx :: Glob I32,
     symbols :: Map.Map Name Natural,
+    slideFn :: Natural,
     reserveFn :: Natural,
-    allocFn :: Natural,
-    slideFn :: Natural
+    allocFn :: Natural
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -163,23 +163,28 @@ bcToInstr (ASSIGNCONST reg c) = const <$> (makeConst c >>= setRegVal reg)
 bcToInstr (UPDATE l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (MKCON l _ tag args) = const <$> (genCon tag args >>= setRegVal l)
 bcToInstr (CASE safe val branches defaultBranch) = genCase safe val branches defaultBranch
+bcToInstr (PROJECT loc offset arity) = genProject loc offset arity
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
     return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
 bcToInstr (TAILCALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
     return $ \(oldBase, _) -> invoke fnIdx [arg oldBase]
-bcToInstr (SLIDE 0) = return $ const $ return ()
-bcToInstr (SLIDE n) = do
-    slide <- asks slideFn
-    return $ const $ invoke slide [i32c n]
+bcToInstr (SLIDE n)
+    | n == 0 = return $ const $ return ()
+    | n <= 4 = genSlide n
+    | otherwise = do
+        slide <- asks slideFn
+        return $ const $ invoke slide [i32c n]
 bcToInstr REBASE = do
     stackBase <- asks stackBaseIdx
     return $ \(oldBase, _) -> stackBase .= oldBase
-bcToInstr (RESERVE 0) = return $ const $ return ()
-bcToInstr (RESERVE n) = do
-    reserve <- asks reserveFn
-    return $ const $ invoke reserve [i32c n]
+bcToInstr (RESERVE n)
+    | n == 0 = return $ const $ return ()
+    | n <= 4 = genReserve n
+    | otherwise = do
+        reserve <- asks reserveFn
+        return $ const $ invoke reserve [i32c n]
 bcToInstr (ADDTOP 0) = return $ const $ return ()
 bcToInstr (ADDTOP n) = do
     stackTop <- asks stackTopIdx
@@ -241,7 +246,7 @@ genCase safe reg branches defaultBranch = do
     branchesBody <- mapM toFunGen branches
     defBody <- case defaultBranch of
         Just code -> mapM bcToInstr code
-        Nothing -> return $ [const nop]
+        Nothing -> return $ [const $ return ()]
     return $ \oldBases -> do
         let defCode = sequence_ $ map ($ oldBases) defBody
         let branchesCode = map (\(tag, code) -> (tag, code oldBases)) branchesBody
@@ -258,6 +263,29 @@ genCase safe reg branches defaultBranch = do
         toFunGen (tag, code) = do
             instrs <- mapM bcToInstr code
             return $ (tag, (\oldBases -> sequence_ $ map ($ oldBases) instrs))
+
+genProject :: Reg -> Int -> Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genProject reg offset arity = do
+    stackBase <- asks stackBaseIdx
+    addr <- getRegVal reg
+    return $ const $ forM_ [0..arity-1] $ \i -> do
+        store stackBase (load i32 addr (12 + i * 4) 2) ((offset + i) * 4) 2
+
+genSlide :: Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genSlide n = do
+    stackBase <- asks stackBaseIdx
+    stackTop <- asks stackTopIdx
+    return $ const $ forM_ [0..n-1] $ \i -> do
+        store stackBase (load i32 stackTop (i * 4) 2) (i * 4) 2
+
+genReserve :: Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genReserve n = do
+    stackTop <- asks stackTopIdx
+    stackEnd <- asks stackEndIdx
+    return $ const $ do
+        ifStmt (stackEnd `lt_u` (stackTop `add` i32c (n * 4)))
+            (const unreachable)
+            (const $ forM_ [0..n-1] $ \i -> store stackTop (i32c 0) (i * 4) 2)
 
 {-
 data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
