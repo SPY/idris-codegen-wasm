@@ -45,9 +45,13 @@ mkWasm defs stackSize =
     genMod $ do
         gc <- importFunction "rts" "gc" (FuncType [I32] [])
         strEq <- importFunction "rts" "strEq" (FuncType [I32, I32] [I32])
-        memory 10 Nothing
+        strHead <- importFunction "rts" "strHead" (FuncType [I32] [I32])
+        strConcat <- importFunction "rts" "strConcat" (FuncType [I32, I32] [I32])
+        strWrite <- importFunction "rts" "strWrite" (FuncType [I32] [I32])
+        intStr <- importFunction "rts" "intStr" (FuncType [I32] [I32])
+        exportMemory "mem" =<< memory 20 Nothing
     
-        stackStart <- global Const i32 0
+        stackStart <- exportGlobal "stackStart" =<< global Const i32 0
         stackEnd <- global Const i32 0
         stackBase <- global Mut i32 0
         stackTop <- global Mut i32 0
@@ -113,6 +117,10 @@ mkWasm defs stackSize =
                 slideFn = slide,
                 reserveFn = reserve,
                 strEqFn = strEq,
+                strHeadFn = strHead,
+                strConcatFn = strConcat,
+                strWriteFn = strWrite,
+                intStrFn = intStr,
                 symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
@@ -145,7 +153,11 @@ data GlobalBindings = GB {
     slideFn :: Natural,
     reserveFn :: Natural,
     allocFn :: Natural,
-    strEqFn :: Natural
+    strEqFn :: Natural,
+    strHeadFn :: Natural,
+    strConcatFn :: Natural,
+    strWriteFn :: Natural,
+    intStrFn :: Natural
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -370,20 +382,6 @@ data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
     | LCrash
 
     | LNoOp
-
-min set:
-SOp (LMinus (ATInt ITNative)) [Loc 0,Loc 1]
-SOp (LTimes (ATInt ITNative)) [Loc 0,Loc 1]
-SOp (LEq (ATInt ITNative)) [Loc 1,Loc 0]
-SOp (LSLt (ATInt ITNative)) [Loc 0,Loc 1]
-SOp (LIntStr ITNative) [Loc 0]
-SOp LStrConcat [Loc 1,Loc 2]
-SOp LWriteStr [Loc 0,Loc 1]
-SOp LStrEq [Loc 4,Loc 6]
-SOp LStrHead [Loc 4]
-SOp (LEq (ATInt ITChar)) [Loc 7,Loc 8]
-SOp (LEq (ATInt ITBig)) [Loc 0,Loc 1]
-SOp (LSLt (ATInt ITBig)) [Loc 0,Loc 1]
 -}
 -- data NativeTy = IT8 | IT16 | IT32 | IT64
 -- data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
@@ -391,37 +389,108 @@ SOp (LSLt (ATInt ITBig)) [Loc 0,Loc 1]
 makeOp :: Reg -> PrimFn -> [Reg] -> WasmGen (GenFun ())
 makeOp loc (LPlus (ATInt (ITFixed IT8))) args =
     i32BinOp loc (\l r -> and (i32c 0xFF) $ add l r) args
-makeOp loc (LPlus (ATInt (ITFixed IT16))) args =
-    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ add l r) args
-makeOp loc (LPlus (ATInt (ITFixed IT32))) args =
-    i32BinOp loc add args
-makeOp loc (LPlus (ATInt ITNative)) args =
-    i32BinOp loc add args
-makeOp loc (LPlus (ATInt ITChar)) args =
-    i32BinOp loc add args
-makeOp loc (LPlus ATFloat) args = f64BinOp loc add args
 makeOp loc (LMinus (ATInt (ITFixed IT8))) args =
     i32BinOp loc (\l r -> and (i32c 0xFF) $ sub l r) args
-makeOp loc (LMinus (ATInt (ITFixed IT16))) args =
-    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ sub l r) args
-makeOp loc (LMinus (ATInt (ITFixed IT32))) args =
-    i32BinOp loc sub args
-makeOp loc (LMinus (ATInt ITNative)) args =
-    i32BinOp loc sub args
-makeOp loc (LMinus (ATInt ITChar)) args =
-    i32BinOp loc sub args
-makeOp loc (LMinus ATFloat) args = f64BinOp loc sub args
 makeOp loc (LTimes (ATInt (ITFixed IT8))) args =
     i32BinOp loc (\l r -> and (i32c 0xFF) $ mul l r) args
+makeOp loc (LEq (ATInt (ITFixed IT8))) args =
+    i32BinOp loc eq args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LSLt (ATInt (ITFixed IT8))) args =
+    i32BinOp loc lt_s args -- do not need clipping for relation ops, coz result 0 or 1
+
+makeOp loc (LPlus (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ add l r) args
+makeOp loc (LMinus (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ sub l r) args
 makeOp loc (LTimes (ATInt (ITFixed IT16))) args =
     i32BinOp loc (\l r -> and (i32c 0xFFFF) $ mul l r) args
+makeOp loc (LEq (ATInt (ITFixed IT16))) args =
+    i32BinOp loc eq args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LSLt (ATInt (ITFixed IT16))) args =
+    i32BinOp loc lt_s args -- do not need clipping for relation ops, coz result 0 or 1
+
+makeOp loc (LPlus (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc add args
+makeOp loc (LMinus (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc sub args
 makeOp loc (LTimes (ATInt (ITFixed IT32))) args =
-    i32BinOp loc mul args
+    i32BitBinOp loc mul args
+makeOp loc (LEq (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc eq args
+makeOp loc (LSLt (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc lt_s args
+
+makeOp loc (LPlus (ATInt (ITFixed IT64))) args =
+    i64BinOp loc add args
+makeOp loc (LMinus (ATInt (ITFixed IT64))) args =
+    i64BinOp loc sub args
+makeOp loc (LTimes (ATInt (ITFixed IT64))) args =
+    i64BinOp loc mul args
+makeOp loc (LEq (ATInt (ITFixed IT64))) args =
+    i64BinOp loc ((extend_u .) . eq) args
+makeOp loc (LSLt (ATInt (ITFixed IT64))) args =
+    i64BinOp loc ((extend_u .) . lt_s) args
+
+makeOp loc (LPlus (ATInt ITBig)) args =
+    bigBinOp loc add args
+makeOp loc (LMinus (ATInt ITBig)) args =
+    bigBinOp loc sub args
+makeOp loc (LTimes (ATInt ITBig)) args =
+    bigBinOp loc mul args
+makeOp loc (LEq (ATInt ITBig)) args =
+    bigBinOp loc ((extend_u .) . eq) args
+makeOp loc (LSLt (ATInt ITBig)) args =
+    bigBinOp loc ((extend_u .) . lt_s) args
+
+makeOp loc (LPlus (ATInt ITNative)) args =
+    i32BinOp loc add args
+makeOp loc (LMinus (ATInt ITNative)) args =
+    i32BinOp loc sub args
 makeOp loc (LTimes (ATInt ITNative)) args =
     i32BinOp loc mul args
+makeOp loc (LEq (ATInt ITNative)) args =
+    i32BinOp loc eq args
+makeOp loc (LSLt (ATInt ITNative)) args =
+    i32BinOp loc lt_s args
+makeOp loc (LIntStr ITNative) [reg] = do
+    val <- getRegVal reg
+    intStr <- asks intStrFn
+    setRegVal loc $ call i32 intStr [val]
+
+makeOp loc (LPlus (ATInt ITChar)) args =
+    i32BinOp loc add args
+makeOp loc (LMinus (ATInt ITChar)) args =
+    i32BinOp loc sub args
 makeOp loc (LTimes (ATInt ITChar)) args =
     i32BinOp loc mul args
+makeOp loc (LEq (ATInt ITChar)) args =
+    i32BinOp loc eq args
+makeOp loc (LSLt (ATInt ITChar)) args =
+    i32BinOp loc lt_s args
+
+makeOp loc (LPlus ATFloat) args = f64BinOp loc add args
+makeOp loc (LMinus ATFloat) args = f64BinOp loc sub args
 makeOp loc (LTimes ATFloat) args = f64BinOp loc mul args
+
+makeOp loc LStrEq [l, r] = do
+    a <- getRegVal l
+    b <- getRegVal r
+    strEq <- asks strEqFn
+    setRegVal loc $ call i32 strEq [a, b]
+makeOp loc LStrConcat [l, r] = do
+    a <- getRegVal l
+    b <- getRegVal r
+    strConcat <- asks strConcatFn
+    setRegVal loc $ call i32 strConcat [a, b]
+makeOp loc LStrHead [reg] = do
+    str <- getRegVal reg
+    strHead <- asks strHeadFn
+    setRegVal loc $ call i32 strHead [str]
+makeOp loc LWriteStr [reg] = do
+    str <- getRegVal reg
+    strWrite <- asks strWriteFn
+    setRegVal loc $ call i32 strWrite [str]
+
 makeOp _ _ _ = return $ return ()
 
 i32BinOp :: Reg
@@ -433,6 +502,36 @@ i32BinOp loc op [l, r] = do
     right <- getRegVal r
     ctor <- genInt
     setRegVal loc $ ctor $ op (load i32 left 8 2) (load i32 right 8 2)
+
+i32BitBinOp :: Reg
+    -> (GenFun (Proxy I32) -> GenFun (Proxy I32) -> GenFun (Proxy I32))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+i32BitBinOp loc op [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genBit32
+    setRegVal loc $ ctor $ op (load i32 left 8 2) (load i32 right 8 2)
+
+i64BinOp :: Reg
+    -> (GenFun (Proxy I64) -> GenFun (Proxy I64) -> GenFun (Proxy I64))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+i64BinOp loc op [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genBit64
+    setRegVal loc $ ctor $ op (load i64 left 8 2) (load i64 right 8 2)
+
+bigBinOp :: Reg
+    -> (GenFun (Proxy I64) -> GenFun (Proxy I64) -> GenFun (Proxy I64))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+bigBinOp loc op [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ op (load i64 left 8 2) (load i64 right 8 2)
 
 f64BinOp :: Reg
     -> (GenFun (Proxy F64) -> GenFun (Proxy F64) -> GenFun (Proxy F64))
@@ -584,7 +683,17 @@ instance Serialize.Serialize StrVal where
 data Bit32Val = B32V { hdr :: ValHeader, val :: Word32 } deriving (Show, Eq)
 
 mkBit32 :: Word32 -> Bit32Val
-mkBit32 val = B32V { hdr = mkHdr Int 12, val }
+mkBit32 val = B32V { hdr = mkHdr Bit32 12, val }
+
+genBit32 :: (Producer val, OutType val ~ Proxy I32) => WasmGen (val -> GenFun (Proxy I32))
+genBit32 = do
+    alloc <- asks allocFn
+    tmp <- asks tmpIdx
+    return $ \val -> do
+        tmp .= call i32 alloc [arg $ i32c (8 + 4)]
+        store8 tmp (i32c $ fromEnum Bit32) 0 2
+        store tmp val 8 2
+        ret tmp
 
 instance Serialize.Serialize Bit32Val where
     put B32V { hdr, val } = do
@@ -595,7 +704,17 @@ instance Serialize.Serialize Bit32Val where
 data Bit64Val = B64V { hdr :: ValHeader, val :: Word64 } deriving (Show, Eq)
 
 mkBit64 :: Word64 -> Bit64Val
-mkBit64 val = B64V { hdr = mkHdr Int 16, val }
+mkBit64 val = B64V { hdr = mkHdr Bit64 16, val }
+
+genBit64 :: (Producer val, OutType val ~ Proxy I64) => WasmGen (val -> GenFun (Proxy I32))
+genBit64 = do
+    alloc <- asks allocFn
+    tmp <- asks tmpIdx
+    return $ \val -> do
+        tmp .= call i32 alloc [arg $ i32c (8 + 8)]
+        store8 tmp (i32c $ fromEnum Bit64) 0 2
+        store tmp val 8 2
+        ret tmp
 
 instance Serialize.Serialize Bit64Val where
     put B64V { hdr, val } = do
@@ -607,7 +726,17 @@ instance Serialize.Serialize Bit64Val where
 data BigIntVal = BIV { hdr :: ValHeader, val :: Word64 } deriving (Show, Eq)
 
 mkBigInt :: Integer -> BigIntVal
-mkBigInt val = BIV { hdr = mkHdr Int 16, val = fromIntegral val }
+mkBigInt val = BIV { hdr = mkHdr BigInt 16, val = fromIntegral val }
+
+genBigInt :: (Producer val, OutType val ~ Proxy I64) => WasmGen (val -> GenFun (Proxy I32))
+genBigInt = do
+    alloc <- asks allocFn
+    tmp <- asks tmpIdx
+    return $ \val -> do
+        tmp .= call i32 alloc [arg $ i32c (8 + 8)]
+        store8 tmp (i32c $ fromEnum Bit64) 0 2
+        store tmp val 8 2
+        ret tmp
 
 instance Serialize.Serialize BigIntVal where
     put BIV { hdr, val } = do
