@@ -1,0 +1,84 @@
+<script>
+    let mem = null
+
+    const ValType = {
+        Con: 0,
+        Int: 1,
+        BigInt: 2,
+        Float: 3,
+        String: 4,
+        StrOffset: 5,
+        Bit32: 6,
+        Bit64: 7
+    }
+
+    function loadValue(addr) {
+        const size = mem.getUint32(addr + 4, true)
+        switch (mem.getUint8(addr)) {
+            case ValType.Con:
+                return { type: 'con', size, tag: mem.getUint32(addr + 8, true), addr }
+            case ValType.Int:
+                return { type: 'int', val: mem.getUint32(addr + 8, true), addr }
+            case ValType.Float:
+                return { type: 'float', val: mem.getFloat64(addr + 8, true), addr }
+            case ValType.String:
+                return {
+                    type: 'string',
+                    size,
+                    len: mem.getUint32(addr + 8, true),
+                    val: mem.buffer.slice(addr + 12, size - 12),
+                    addr
+                }
+            default:
+                throw new Error('Unknown value')
+        }
+    }
+
+    function gc(requestedSize) {
+        console.log('gc', requestedSize)
+    }
+
+    function strEq(a, b) {
+        console.log('str eq', loadValue(a), loadValue(b))
+        return 0
+    }
+
+    function strHead(strAddr) {
+        console.log('str head', loadValue(strAddr))
+        return 0
+    }
+
+    function strConcat(a, b) {
+        console.log('str concat', loadValue(a), loadValue(b))
+        return 0
+    }
+
+    function strWrite(strAddr) {
+        console.log('str write', loadValue(strAddr))
+        console.log(strAddr)
+        return 0
+    }
+
+    function intStr(i) {
+        console.log('int to str', loadValue(i))
+        return 0
+    }
+
+    function raiseError(strAddr) {
+        console.log('raise error', strAddr)
+        throw new Error('Idris Error')
+    }
+
+    fetch('fact.wasm').then(response =>
+        response.arrayBuffer()
+    ).then(bytes => {
+        return WebAssembly.instantiate(bytes, {
+            rts: { raiseError, gc, strEq, strHead, strConcat, strWrite, intStr }
+        })
+    }).then(results => {
+        console.log('result', results)
+        const {alloc, mem: m, main, stackStart} = results.instance.exports
+        mem = new DataView(m.buffer)
+        main(stackStart)
+    }).catch(err => console.log('wasm error', err));
+</script>

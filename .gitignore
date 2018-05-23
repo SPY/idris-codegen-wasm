@@ -2,3 +2,4 @@ dist/
 fact.*
 cabal.sandbox.config
 .cabal-sandbox
+rts/fact.*

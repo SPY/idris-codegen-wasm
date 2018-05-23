@@ -23,7 +23,7 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.UTF8 as UTF8
 import qualified Data.ByteString.Builder as BSBuilder
 
-import Idris.Core.TT (Name, Const(..), NativeTy(..), IntTy(..), ArithTy(..), isTypeConst)
+import Idris.Core.TT (Name(..), Const(..), NativeTy(..), IntTy(..), ArithTy(..), isTypeConst)
 import IRTS.Bytecode
 import IRTS.CodegenCommon
 import IRTS.Lang (PrimFn(..))
@@ -32,19 +32,17 @@ import Language.Wasm.Structure
 import qualified Language.Wasm.Binary as WasmBinary
 import Language.Wasm.Builder
 
-type TypeIndex = Natural
-
 codegenWasm :: CodeGenerator
 codegenWasm ci = do
     let bc = map toBC $ simpleDecls ci
-    let wasmModule = mkWasm bc (1024 * 1024)
-    -- print wasmModule
+    let wasmModule = mkWasm bc (1024 * 1024) (128 * 1024)
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
-mkWasm :: [(Name, [BC])] -> Int -> Module
-mkWasm defs stackSize =
+mkWasm :: [(Name, [BC])] -> Int -> Int -> Module
+mkWasm defs stackSize heapSize =
     genMod $ do
         gc <- importFunction "rts" "gc" (FuncType [I32] [])
+        raiseError <- importFunction "rts" "raiseError" (FuncType [I32] [])
         strEq <- importFunction "rts" "strEq" (FuncType [I32, I32] [I32])
         strHead <- importFunction "rts" "strHead" (FuncType [I32] [I32])
         strConcat <- importFunction "rts" "strConcat" (FuncType [I32, I32] [I32])
@@ -64,11 +62,24 @@ mkWasm defs stackSize =
         heapNext <- global Mut i32 0
         heapEnd <- global Mut i32 0
     
+        exportFunction "getHeapStart" =<< (fun $ do
+            result i32
+            ret heapStart)
+        exportFunction "setHeapStart" =<< (fun $ do
+            val <- param i32
+            heapStart .= val)
+        exportFunction "getHeapEnd" =<< (fun $ do
+            result i32
+            ret heapEnd)
+        exportFunction "setHeapEnd" =<< (fun $ do
+            val <- param i32
+            heapEnd .= val)
+        
         aligned <- fun $ do
             size <- param i32
             result i32
             (size `add` i32c 3) `and` i32c 0xFFFFFFFC
-        alloc <- funRec $ \self -> do
+        alloc <- exportFunction "alloc" =<< (funRec $ \self -> do
             size <- param i32
             result i32
             alignedSize <- local i32
@@ -88,6 +99,7 @@ mkWasm defs stackSize =
                     invoke gc [arg size]
                     call i32 self [arg size]
                 )
+            )
         slide <- fun $ do
             n <- param i32
             source <- local i32
@@ -116,6 +128,7 @@ mkWasm defs stackSize =
                 stackTopIdx = stackTop,
                 returnValueIdx = retReg,
                 tmpIdx = tmpReg,
+                raiseErrorFn = raiseError,
                 allocFn = alloc,
                 slideFn = slide,
                 reserveFn = reserve,
@@ -129,10 +142,16 @@ mkWasm defs stackSize =
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
         let GS { constSectionEnd, constSection } = st
         sequence_ funcs
+        case Map.lookup (MN 0 "runMain") $ symbols bindings of
+            Just idx -> exportFunction "main" idx >> return ()
+            Nothing -> return ()
         setGlobalInitializer stackStart $ fromIntegral constSectionEnd
         setGlobalInitializer stackEnd $ fromIntegral constSectionEnd + fromIntegral stackSize
         setGlobalInitializer stackBase $ fromIntegral constSectionEnd
         setGlobalInitializer stackTop $ fromIntegral constSectionEnd
+        setGlobalInitializer heapStart $ fromIntegral constSectionEnd + fromIntegral stackSize
+        setGlobalInitializer heapNext $ fromIntegral constSectionEnd + fromIntegral stackSize
+        setGlobalInitializer heapEnd $ fromIntegral constSectionEnd + fromIntegral (stackSize + heapSize)
         dataSegment (i32c 0) $ BSBuilder.toLazyByteString constSection
         return ()
 
@@ -153,6 +172,7 @@ data GlobalBindings = GB {
     returnValueIdx :: Glob I32,
     tmpIdx :: Glob I32,
     symbols :: Map.Map Name Natural,
+    raiseErrorFn :: Natural,
     slideFn :: Natural,
     reserveFn :: Natural,
     allocFn :: Natural,
@@ -233,6 +253,10 @@ bcToInstr STOREOLD = do
     return $ \(_, myOldBase) -> myOldBase .= stackBase
 bcToInstr (OP loc op args) = const <$> makeOp loc op args
 bcToInstr (NULL reg) = const <$> setRegVal reg (i32c 0)
+bcToInstr (ERROR str) = do
+    raiseError <- asks raiseErrorFn
+    strAddr <- makeConst (Str str)
+    return $ const $ invoke raiseError [strAddr]
 bcToInstr _ = return $ const $ return ()
 
 getRegVal :: Reg -> WasmGen (GenFun (Proxy I32))
@@ -489,7 +513,7 @@ makeOp loc LStrHead [reg] = do
     str <- getRegVal reg
     strHead <- asks strHeadFn
     setRegVal loc $ call i32 strHead [str]
-makeOp loc LWriteStr [reg] = do
+makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
     setRegVal loc $ call i32 strWrite [str]
