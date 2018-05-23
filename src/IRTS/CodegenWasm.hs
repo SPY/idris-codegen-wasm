@@ -38,6 +38,7 @@ codegenWasm :: CodeGenerator
 codegenWasm ci = do
     let bc = map toBC $ simpleDecls ci
     let wasmModule = mkWasm bc (1024 * 1024)
+    -- print wasmModule
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
 mkWasm :: [(Name, [BC])] -> Int -> Module
@@ -65,9 +66,11 @@ mkWasm defs stackSize =
     
         aligned <- fun $ do
             size <- param i32
+            result i32
             (size `add` i32c 3) `and` i32c 0xFFFFFFFC
         alloc <- funRec $ \self -> do
             size <- param i32
+            result i32
             alignedSize <- local i32
             addr <- local i32
             i <- local i32
@@ -82,7 +85,7 @@ mkWasm defs stackSize =
                     ret addr
                 )
                 (const $ do
-                    invoke gc []
+                    invoke gc [arg size]
                     call i32 self [arg size]
                 )
         slide <- fun $ do
@@ -270,7 +273,7 @@ genCase safe reg branches defaultBranch = do
     return $ \oldBases -> do
         let defCode = sequence_ $ map ($ oldBases) defBody
         let branchesCode = map (\(tag, code) -> (tag, code oldBases)) branchesBody
-        let conCheck = load8u i32 addr 0 2 `eq` i32c (fromEnum Con)
+        let conCheck = load8u i32 addr 0 0 `eq` i32c (fromEnum Con)
         let conTag = load i32 addr 8 2
         let conGuard body
                 | safe = body
@@ -627,7 +630,7 @@ genInt = do
     tmp <- asks tmpIdx
     return $ \val -> do
         tmp .= call i32 alloc [arg $ i32c (8 + 4)]
-        store8 tmp (i32c $ fromEnum Int) 0 2
+        store8 tmp (i32c $ fromEnum Int) 0 0
         store tmp val 8 2
         ret tmp
 
@@ -648,7 +651,7 @@ genFloat = do
     tmp <- asks tmpIdx
     return $ \val -> do
         tmp .= call i32 alloc [arg $ i32c (8 + 8)]
-        store8 tmp (i32c $ fromEnum Float) 0 2
+        store8 tmp (i32c $ fromEnum Float) 0 0
         store tmp val 8 2
         ret tmp
 
@@ -691,7 +694,7 @@ genBit32 = do
     tmp <- asks tmpIdx
     return $ \val -> do
         tmp .= call i32 alloc [arg $ i32c (8 + 4)]
-        store8 tmp (i32c $ fromEnum Bit32) 0 2
+        store8 tmp (i32c $ fromEnum Bit32) 0 0
         store tmp val 8 2
         ret tmp
 
@@ -712,7 +715,7 @@ genBit64 = do
     tmp <- asks tmpIdx
     return $ \val -> do
         tmp .= call i32 alloc [arg $ i32c (8 + 8)]
-        store8 tmp (i32c $ fromEnum Bit64) 0 2
+        store8 tmp (i32c $ fromEnum Bit64) 0 0
         store tmp val 8 2
         ret tmp
 
@@ -734,7 +737,7 @@ genBigInt = do
     tmp <- asks tmpIdx
     return $ \val -> do
         tmp .= call i32 alloc [arg $ i32c (8 + 8)]
-        store8 tmp (i32c $ fromEnum Bit64) 0 2
+        store8 tmp (i32c $ fromEnum Bit64) 0 0
         store tmp val 8 2
         ret tmp
 
@@ -759,7 +762,7 @@ genCon tag args = do
     args' <- mapM getRegVal args
     return $ do
         tmp .= call i32 alloc [arg $ i32c (8 + 4 + 4 * fromIntegral arity)]
-        store8 tmp (i32c $ fromEnum Con) 0 2
+        store8 tmp (i32c $ fromEnum Con) 0 0
         store16 tmp (i32c arity) 2 1
         store tmp (i32c tag) 8 2
         forM_ (zip args' [0..]) $ \(arg, i) -> store tmp arg (8 + 4 + 4 * i) 2
