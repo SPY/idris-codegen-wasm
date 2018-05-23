@@ -45,7 +45,6 @@ mkWasm defs stackSize heapSize =
         raiseError <- importFunction "rts" "raiseError" (FuncType [I32] [])
         strEq <- importFunction "rts" "strEq" (FuncType [I32, I32] [I32])
         strHead <- importFunction "rts" "strHead" (FuncType [I32] [I32])
-        strConcat <- importFunction "rts" "strConcat" (FuncType [I32, I32] [I32])
         strWrite <- importFunction "rts" "strWrite" (FuncType [I32] [I32])
         intStr <- importFunction "rts" "intStr" (FuncType [I32] [I32])
         exportMemory "mem" =<< memory 20 Nothing
@@ -120,6 +119,28 @@ mkWasm defs stackSize heapSize =
                 (const $ for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ const $ do
                     store i (i32c 0) 0 2
                 )
+        memcpy <- fun $ do
+            dst <- param i32
+            src <- param i32
+            len <- param i32
+            i <- local i32
+            for (i .= i32c 0) (i `lt_u` len) (i .= (i `add` i32c 1)) $ const $ do
+                store8 (dst `add` i) (load8u i32 (src `add` i) 0 0) 0 0
+        strConcat <- fun $ do
+            a <- param i32
+            b <- param i32
+            result i32
+            aSize <- local i32
+            bSize <- local i32
+            addr <- local i32
+            aSize .= load i32 a 4 2
+            bSize .= load i32 b 4 2
+            addr .= call i32 alloc [aSize `add` bSize `sub` i32c 12]
+            store8 addr (i32c $ fromEnum String) 0 0
+            store addr (load i32 a 8 2 `add` load i32 b 8 2) 8 2
+            invoke memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
+            invoke memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
+            ret addr
         defsStartFrom <- nextFuncIndex
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -158,11 +179,14 @@ mkWasm defs stackSize heapSize =
 data GenState = GS {
     constSectionEnd :: Word32,
     constSection :: BSBuilder.Builder,
-    strCache :: Map.Map String Word32
+    strCache :: Map.Map String Word32,
+    intCache :: Map.Map Int Word32,
+    bigCache :: Map.Map Integer Word32,
+    doubleCache :: Map.Map Double Word32
 }
 
 emptyState :: GenState
-emptyState = GS 0 mempty mempty
+emptyState = GS 0 mempty mempty mempty mempty mempty
 
 data GlobalBindings = GB {
     stackBaseIdx :: Glob I32,
@@ -576,22 +600,50 @@ asAddr expr = do
     return $ i32c addr
 
 makeConst :: Const -> WasmGen (GenFun (Proxy I32))
-makeConst (I i) = asAddr $ addToConstSection (mkInt i)
-makeConst (BI i) = asAddr $ addToConstSection (mkBigInt i)
-makeConst (Fl f) = asAddr $ addToConstSection (mkFloat f)
-makeConst (Ch c) = asAddr $ addToConstSection (mkInt $ Char.ord c)
+makeConst (I i) = makeIntConst i
+makeConst (BI i) = do
+    cache <- gets bigCache
+    case Map.lookup i cache of
+        Just addr -> return $ i32c addr
+        Nothing -> do
+            addr <- addToConstSection (mkBigInt i)
+            modify $ \st -> st { bigCache = Map.insert i addr cache }
+            return $ i32c addr
+makeConst (Fl f) = do
+    cache <- gets doubleCache
+    case Map.lookup f cache of
+        Just addr -> return $ i32c addr
+        Nothing -> do
+            addr <- addToConstSection (mkFloat f)
+            modify $ \st -> st { doubleCache = Map.insert f addr cache }
+            return $ i32c addr
+makeConst (Ch c) = makeIntConst $ Char.ord c
 makeConst (Str s) = do
     cache <- gets strCache
     case Map.lookup s cache of
         Just addr -> return $ i32c addr
-        Nothing -> asAddr $ addToConstSection (mkStr s)
-makeConst (B8 w) = asAddr $ addToConstSection (mkInt w)
-makeConst (B16 w) = asAddr $ addToConstSection (mkInt w)
+        Nothing -> do
+            addr <- addToConstSection (mkStr s)
+            modify $ \st -> st { strCache = Map.insert s addr cache }
+            return $ i32c addr
+makeConst (B8 w) = makeIntConst w
+makeConst (B16 w) = makeIntConst w
 makeConst (B32 w) = asAddr $ addToConstSection (mkBit32 w)
 makeConst (B64 w) = asAddr $ addToConstSection (mkBit64 w)
 makeConst c
     | isTypeConst c = asAddr $ addToConstSection (mkInt 42424242)
     | otherwise = error $ "mkConst of (" ++ show c ++ ") not implemented"
+
+makeIntConst :: (Integral i) => i -> WasmGen (GenFun (Proxy I32))
+makeIntConst val = do
+    let i = fromIntegral val
+    cache <- gets intCache
+    case Map.lookup i cache of
+        Just addr -> return $ i32c addr
+        Nothing -> do
+            addr <- addToConstSection (mkInt i)
+            modify $ \st -> st { intCache = Map.insert i addr cache }
+            return $ i32c addr
 
 aligned :: (Integral i) => i -> Word32
 aligned sz = (fromIntegral sz + 3) .&. 0xFFFFFFFC
@@ -701,6 +753,7 @@ instance Serialize.Serialize StrVal where
     put SV { hdr, len, val } = do
         Serialize.put hdr
         Serialize.putWord32le len
+        Serialize.putLazyByteString val
     get = do
         hdr <- Serialize.get
         len <- Serialize.getWord32le
