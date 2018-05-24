@@ -65,17 +65,6 @@
         console.log('gc', requestedSize)
     }
 
-    function strEq(a, b) {
-        if (a === b) {
-            return makeInt(1)
-        }
-        const strA = loadString(a)
-        const strB = loadString(b)
-        const res = makeInt(strA === strB ? 1 : 0)
-        console.log('str eq', loadValue(a), loadValue(b), loadValue(res))
-        return res
-    }
-
     function strWrite(strAddr) {
         console.log('str write', loadValue(strAddr))
         console.log(loadString(strAddr))
@@ -203,7 +192,7 @@
         response.arrayBuffer()
     ).then(bytes => {
         return WebAssembly.instantiate(bytes, {
-            rts: { raiseError, gc, strEq, strWrite, intStr }
+            rts: { raiseError, gc, strWrite, intStr }
         })
     }).then(results => {
         const {alloc: a, mem: m, main, stackStart} = results.instance.exports
