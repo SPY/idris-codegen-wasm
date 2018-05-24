@@ -16,7 +16,7 @@ import qualified Data.Char as Char
 import qualified Data.Map as Map
 import Data.Monoid ((<>), mempty)
 import Data.Proxy
-import Prelude hiding (and)
+import Prelude hiding (and, or)
 
 import qualified Data.Serialize as Serialize
 import qualified Data.ByteString.Lazy as LBS
@@ -44,7 +44,6 @@ mkWasm defs stackSize heapSize =
         gc <- importFunction "rts" "gc" (FuncType [I32] [])
         raiseError <- importFunction "rts" "raiseError" (FuncType [I32] [])
         strEq <- importFunction "rts" "strEq" (FuncType [I32, I32] [I32])
-        strHead <- importFunction "rts" "strHead" (FuncType [I32] [I32])
         strWrite <- importFunction "rts" "strWrite" (FuncType [I32] [I32])
         intStr <- importFunction "rts" "intStr" (FuncType [I32] [I32])
         exportMemory "mem" =<< memory 20 Nothing
@@ -141,6 +140,52 @@ mkWasm defs stackSize heapSize =
             invoke memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
             invoke memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
             ret addr
+        readChar <- fun $ do
+            addr <- param i32
+            result i32
+            byte <- local i32
+            res <- local i32
+            byte .= load8u i32 addr 0 0
+            let makeChar :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
+                makeChar char = do
+                    res .= call i32 alloc [i32c 12]
+                    store8 res (i32c $ fromEnum Int) 0 0
+                    store res char 8 2
+                    ret res
+            ifExpr i32 (eqz $ byte `and` i32c 0xE0)
+                (const $ makeChar byte)
+                (const $ ifExpr i32 ((byte `and` i32c 0xE0) `eq` i32c 0xC0)
+                    (const $ makeChar
+                        $ ((byte `and` i32c 0x1F) `shl` i32c 6)
+                        `or` (load8u i32 addr 1 0 `and` i32c 0x3F)
+                    )
+                    (const $ ifExpr i32 ((byte `and` i32c 0xF0) `eq` i32c 0xE0)
+                        (const $ makeChar
+                            $ ((byte `and` i32c 0x0F) `shl` i32c 12)
+                            `or` ((load8u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 6)
+                            `or` (load8u i32 addr 2 0 `and` i32c 0x3F)
+                        )
+                        (const $ makeChar
+                            $ ((byte `and` i32c 0x07) `shl` i32c 18)
+                            `or` ((load8u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 12)
+                            `or` ((load8u i32 addr 2 0 `and` i32c 0x3F) `shl` i32c 6)
+                            `or` (load8u i32 addr 3 0 `and` i32c 0x3F)
+                        )
+                    )
+                )
+        strIndex <- fun $ do
+            addr <- param i32
+            idx <- param i32
+            result i32
+            curByte <- local i32
+            curIdx <- local i32
+            curIdx .= i32c 0
+            for (curByte .= (addr `add` i32c 12)) (curIdx `lt_u` idx) (inc 1 curByte) $ const $
+                ifStmt ((load8u i32 curByte 0 0 `and` i32c 0xC0) `ne` i32c 0x80)
+                    (const $ inc 1 curIdx)
+                    (const $ return ())
+            while ((load8u i32 curByte 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ const $ inc 1 curByte
+            call i32 readChar [arg curByte]
         defsStartFrom <- nextFuncIndex
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -154,10 +199,11 @@ mkWasm defs stackSize heapSize =
                 slideFn = slide,
                 reserveFn = reserve,
                 strEqFn = strEq,
-                strHeadFn = strHead,
+                strIndexFn = strIndex,
                 strConcatFn = strConcat,
                 strWriteFn = strWrite,
                 intStrFn = intStr,
+                readCharFn = readChar,
                 symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
@@ -201,9 +247,10 @@ data GlobalBindings = GB {
     reserveFn :: Natural,
     allocFn :: Natural,
     strEqFn :: Natural,
-    strHeadFn :: Natural,
+    strIndexFn :: Natural,
     strConcatFn :: Natural,
     strWriteFn :: Natural,
+    readCharFn :: Natural,
     intStrFn :: Natural
 }
 
@@ -535,8 +582,13 @@ makeOp loc LStrConcat [l, r] = do
     setRegVal loc $ call i32 strConcat [a, b]
 makeOp loc LStrHead [reg] = do
     str <- getRegVal reg
-    strHead <- asks strHeadFn
-    setRegVal loc $ call i32 strHead [str]
+    readChar <- asks readCharFn
+    setRegVal loc $ call i32 readChar [str `add` i32c 12]
+makeOp loc LStrIndex [strReg, idxReg] = do
+    str <- getRegVal strReg
+    idx <- getRegVal idxReg
+    strIndex <- asks strIndexFn
+    setRegVal loc $ call i32 strIndex [str, idx]
 makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn

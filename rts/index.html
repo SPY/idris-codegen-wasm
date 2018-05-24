@@ -26,14 +26,14 @@
                 return {
                     type: 'bit64',
                     size,
-                    val: [mem.getInt32(addr + 8, true), mem.getInt32(addr + 12, true)],
+                    val: [mem.getUint32(addr + 12, true), mem.getUint32(addr + 8, true)],
                     addr
                 }
             case ValType.BigInt:
                 return {
                     type: 'big',
                     size,
-                    val: [mem.getInt32(addr + 8, true), mem.getInt32(addr + 12, true)],
+                    val: [mem.getUint32(addr + 12, true), mem.getUint32(addr + 8, true)],
                     addr
                 }
             case ValType.Float:
@@ -73,21 +73,6 @@
         const strB = loadString(b)
         const res = makeInt(strA === strB ? 1 : 0)
         console.log('str eq', loadValue(a), loadValue(b), loadValue(res))
-        return res
-    }
-
-    function strHead(strAddr) {
-        const head = readString(strAddr + 12, 1)
-        const res = makeString(head)
-        console.log('str head', loadValue(strAddr), head, loadValue(res))
-        return res
-    }
-
-    function strConcat(a, b) {
-        const va = loadValue(a)
-        const vb = loadValue(b)
-        const res = makeString(va.val + vb.val)
-        console.log('str concat', va, vb, loadValue(res))
         return res
     }
 
@@ -218,7 +203,7 @@
         response.arrayBuffer()
     ).then(bytes => {
         return WebAssembly.instantiate(bytes, {
-            rts: { raiseError, gc, strEq, strHead, strConcat, strWrite, intStr }
+            rts: { raiseError, gc, strEq, strWrite, intStr }
         })
     }).then(results => {
         const {alloc: a, mem: m, main, stackStart} = results.instance.exports
