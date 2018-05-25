@@ -293,6 +293,27 @@ mkWasm defs stackSize heapSize =
             invoke storeChar [arg $ res `add` i32c 12, arg char]
             invoke memcpy [res `add` i32c 12 `add` width, tail `add` i32c 12, size `sub` i32c 12]
             ret res
+        strRev <- fun $ do
+            addr <- param i32
+            result i32
+            len <- local i32
+            res <- local i32
+            width <- local i32
+            next <- local i32
+            len .= load i32 addr 8 2
+            res .= call i32 alloc [load i32 addr 4 2]
+            store8 res (i32c $ fromEnum String) 0 0
+            store8 res (load i32 addr 1 2) 1 0
+            store res len 8 2
+            next .= (res `add` load i32 addr 4 2)
+            addr .= (addr `add` i32c 12)
+            while (len `ne` i32c 0) $ const $ do
+                width .= (call i32 strOffset [arg addr, arg $ i32c 1] `sub` addr)
+                next .= (next `sub` width)
+                invoke memcpy [arg next, arg addr, arg width]
+                addr .= (addr `add` width)
+                dec 1 len
+            ret res
         defsStartFrom <- nextFuncIndex
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -311,6 +332,7 @@ mkWasm defs stackSize heapSize =
                 strConcatFn = strConcat,
                 strConsFn = strCons,
                 strSubstrFn = strSubstr,
+                strRevFn = strRev,
                 strWriteFn = strWrite,
                 intStrFn = intStr,
                 readCharFn = readChar,
@@ -363,6 +385,7 @@ data GlobalBindings = GB {
     strConcatFn :: Natural,
     strConsFn :: Natural,
     strSubstrFn :: Natural,
+    strRevFn :: Natural,
     strWriteFn :: Natural,
     readCharFn :: Natural,
     intStrFn :: Natural,
@@ -788,6 +811,10 @@ makeOp loc LStrIndex [strReg, idxReg] = do
     idx <- getRegVal idxReg
     strIndex <- asks strIndexFn
     setRegVal loc $ call i32 strIndex [str, load i32 idx 8 2]
+makeOp loc LStrRev [strReg] = do
+    str <- getRegVal strReg
+    strRev <- asks strRevFn
+    setRegVal loc $ call i32 strRev [str]
 makeOp loc LStrSubstr [offsetReg, lengthReg, strReg] = do
     str <- getRegVal strReg
     off <- getRegVal offsetReg
