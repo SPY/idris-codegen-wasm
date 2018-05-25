@@ -173,19 +173,36 @@ mkWasm defs stackSize heapSize =
                         )
                     )
                 )
+        strOffset <- fun $ do
+            addr <- param i32
+            idx <- param i32
+            result i32
+            while (idx `ne` i32c 0) $ const $ do
+                when ((load8u i32 addr 0 0 `and` i32c 0xC0) `ne` i32c 0x80) $ dec 1 idx
+                inc 1 addr
+            while ((load8u i32 addr 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ const $ inc 1 addr
+            ret addr
         strIndex <- fun $ do
             addr <- param i32
             idx <- param i32
             result i32
-            curByte <- local i32
-            curIdx <- local i32
-            curIdx .= i32c 0
-            for (curByte .= (addr `add` i32c 12)) (curIdx `lt_u` idx) (inc 1 curByte) $ const $
-                ifStmt ((load8u i32 curByte 0 0 `and` i32c 0xC0) `ne` i32c 0x80)
-                    (const $ inc 1 curIdx)
-                    (const $ return ())
-            while ((load8u i32 curByte 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ const $ inc 1 curByte
-            call i32 readChar [arg curByte]
+            call i32 readChar [call i32 strOffset [arg $ addr `add` i32c 12, arg idx]]
+        strSubstr <- fun $ do
+            addr <- param i32
+            offset <- param i32
+            length <- param i32
+            result i32
+            start <- local i32
+            end <- local i32
+            size <- local i32
+            start .= call i32 strOffset [arg $ addr `add` i32c 12, arg offset]
+            end .= call i32 strOffset [arg start, arg length]
+            size .= (end `sub` start)
+            addr .= call i32 alloc [size `add` i32c 12]
+            store8 addr (i32c $ fromEnum String) 0 0
+            store addr length 8 2
+            invoke memcpy [arg (addr `add` i32c 12), arg start, arg size]
+            ret addr
         strEq <- fun $ do
             a <- param i32
             b <- param i32
@@ -211,6 +228,20 @@ mkWasm defs stackSize heapSize =
                         i32c 1
                     )
                 )
+        strLt <- fun $ do
+            a <- param i32
+            b <- param i32
+            result i32
+            i <- local i32
+            j <- local i32
+            end <- local i32
+            i .= load i32 a 4 2
+            j .= load i32 b 4 2
+            end .= (a `add` (ifExpr i32 (i `lt_u` j) (const $ ret i) (const $ ret j)))
+            for (i .= (a `add` i32c 12) >> j .= (b `add` i32c 12)) (i `lt_u` end) (inc 1 i >> inc 1 j) $ const $ do
+                when (load8u i32 i 0 0 `lt_u` load8u i32 j 0 0) $ finish $ i32c 1
+                when (load8u i32 i 0 0 `gt_u` load8u i32 j 0 0) $ finish $ i32c 0
+            load i32 a 4 2 `lt_u` load i32 b 4 2
         charWidth <- fun $ do
             code <- param i32
             result i32
@@ -275,9 +306,11 @@ mkWasm defs stackSize heapSize =
                 slideFn = slide,
                 reserveFn = reserve,
                 strEqFn = strEq,
+                strLtFn = strLt,
                 strIndexFn = strIndex,
                 strConcatFn = strConcat,
                 strConsFn = strCons,
+                strSubstrFn = strSubstr,
                 strWriteFn = strWrite,
                 intStrFn = intStr,
                 readCharFn = readChar,
@@ -325,9 +358,11 @@ data GlobalBindings = GB {
     reserveFn :: Natural,
     allocFn :: Natural,
     strEqFn :: Natural,
+    strLtFn :: Natural,
     strIndexFn :: Natural,
     strConcatFn :: Natural,
     strConsFn :: Natural,
+    strSubstrFn :: Natural,
     strWriteFn :: Natural,
     readCharFn :: Natural,
     intStrFn :: Natural,
@@ -655,6 +690,12 @@ makeOp loc LStrConcat [l, r] = do
     b <- getRegVal r
     strConcat <- asks strConcatFn
     setRegVal loc $ call i32 strConcat [a, b]
+makeOp loc LStrLt [l, r] = do
+    a <- getRegVal l
+    b <- getRegVal r
+    strLt <- asks strLtFn
+    intCtor <- genInt
+    setRegVal loc $ intCtor $ call i32 strLt [a, b]
 makeOp loc LStrEq [l, r] = do
     a <- getRegVal l
     b <- getRegVal r
@@ -669,6 +710,10 @@ makeOp loc LStrHead [reg] = do
     str <- getRegVal reg
     readChar <- asks readCharFn
     setRegVal loc $ call i32 readChar [str `add` i32c 12]
+makeOp loc LStrTail [reg] = do
+    str <- getRegVal reg
+    strSubstr <- asks strSubstrFn
+    setRegVal loc $ call i32 strSubstr [str, i32c 1, load i32 str 8 2 `sub` i32c 1]
 makeOp loc LStrCons [charReg, tailReg] = do
     char <- getRegVal charReg
     tail <- getRegVal tailReg
@@ -679,6 +724,12 @@ makeOp loc LStrIndex [strReg, idxReg] = do
     idx <- getRegVal idxReg
     strIndex <- asks strIndexFn
     setRegVal loc $ call i32 strIndex [str, load i32 idx 8 2]
+makeOp loc LStrSubstr [offsetReg, lengthReg, strReg] = do
+    str <- getRegVal strReg
+    off <- getRegVal offsetReg
+    len <- getRegVal lengthReg
+    strSubstr <- asks strSubstrFn
+    setRegVal loc $ call i32 strSubstr [str, load i32 off 8 2, load i32 len 8 2]
 makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
