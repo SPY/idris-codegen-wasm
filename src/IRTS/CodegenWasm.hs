@@ -661,10 +661,49 @@ makeOp loc (LMinus (ATInt ITNative)) args =
     i32BinOp loc sub args
 makeOp loc (LTimes (ATInt ITNative)) args =
     i32BinOp loc mul args
+makeOp loc (LUDiv ITNative) args =
+    i32BinOp loc div_u args
+makeOp loc (LSDiv (ATInt ITNative)) args =
+    i32BinOp loc div_s args
+makeOp loc (LURem ITNative) args =
+    i32BinOp loc rem_u args
+makeOp loc (LSRem (ATInt ITNative)) args =
+    i32BinOp loc rem_s args
+makeOp loc (LAnd ITNative) args =
+    i32BinOp loc and args
+makeOp loc (LOr ITNative) args =
+    i32BinOp loc or args
+makeOp loc (LXOr ITNative) args =
+    i32BinOp loc xor args
+makeOp loc (LSHL ITNative) args =
+    i32BinOp loc shl args
+makeOp loc (LLSHR ITNative) args =
+    i32BinOp loc shr_u args
+makeOp loc (LASHR ITNative) args =
+    i32BinOp loc shr_s args
+makeOp loc (LCompl ITNative) [x] = do
+    val <- getRegVal x
+    ctor <- genInt
+    setRegVal loc $ ctor $ load i32 val 8 2 `xor` i32c (-1)
 makeOp loc (LEq (ATInt ITNative)) args =
     i32BinOp loc eq args
 makeOp loc (LSLt (ATInt ITNative)) args =
     i32BinOp loc lt_s args
+makeOp loc (LSLe (ATInt ITNative)) args =
+    i32BinOp loc le_s args
+makeOp loc (LSGt (ATInt ITNative)) args =
+    i32BinOp loc gt_s args
+makeOp loc (LSGe (ATInt ITNative)) args =
+    i32BinOp loc ge_s args
+makeOp loc (LLt ITNative) args =
+    i32BinOp loc lt_u args
+makeOp loc (LLe ITNative) args =
+    i32BinOp loc le_u args
+makeOp loc (LGt ITNative) args =
+    i32BinOp loc gt_u args
+makeOp loc (LGe ITNative) args =
+    i32BinOp loc ge_u args
+
 makeOp loc (LIntStr ITNative) [reg] = do
     val <- getRegVal reg
     intStr <- asks intStrFn
