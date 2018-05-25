@@ -704,21 +704,46 @@ makeOp loc (LGt ITNative) args =
 makeOp loc (LGe ITNative) args =
     i32BinOp loc ge_u args
 
+makeOp loc (LSExt ITNative ITBig) [reg] = do
+    val <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
+makeOp loc (LZExt ITNative ITBig) [reg] = do
+    val <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
+makeOp loc (LTrunc ITBig ITNative) [reg] = do
+    val <- getRegVal reg
+    ctor <- genInt
+    setRegVal loc $ ctor $ wrap $ load i64 val 8 2
 makeOp loc (LIntStr ITNative) [reg] = do
     val <- getRegVal reg
     intStr <- asks intStrFn
     setRegVal loc $ call i32 intStr [val]
 
-makeOp loc (LPlus (ATInt ITChar)) args =
-    i32BinOp loc add args
-makeOp loc (LMinus (ATInt ITChar)) args =
-    i32BinOp loc sub args
-makeOp loc (LTimes (ATInt ITChar)) args =
-    i32BinOp loc mul args
-makeOp loc (LEq (ATInt ITChar)) args =
-    i32BinOp loc eq args
-makeOp loc (LSLt (ATInt ITChar)) args =
-    i32BinOp loc lt_s args
+makeOp loc (LPlus (ATInt ITChar)) [l, r] = makeOp loc (LPlus (ATInt ITNative)) [l, r]
+makeOp loc (LMinus (ATInt ITChar)) [l, r] = makeOp loc (LMinus (ATInt ITNative)) [l, r]
+makeOp loc (LTimes (ATInt ITChar)) [l, r] = makeOp loc (LTimes (ATInt ITNative)) [l, r]
+makeOp loc (LUDiv ITChar) [l, r] = makeOp loc (LUDiv ITNative) [l, r]
+makeOp loc (LSDiv (ATInt ITChar)) [l, r] = makeOp loc (LSDiv (ATInt ITNative)) [l, r]
+makeOp loc (LURem ITChar) [l, r] = makeOp loc (LURem ITNative) [l, r]
+makeOp loc (LSRem (ATInt ITChar)) [l, r] = makeOp loc (LSRem (ATInt ITNative)) [l, r]
+makeOp loc (LAnd ITChar) [l, r] = makeOp loc (LAnd ITNative) [l, r]
+makeOp loc (LOr ITChar) [l, r] = makeOp loc (LOr ITNative) [l, r]
+makeOp loc (LXOr ITChar) [l, r] = makeOp loc (LXOr ITNative) [l, r]
+makeOp loc (LSHL ITChar) [l, r] = makeOp loc (LSHL ITNative) [l, r]
+makeOp loc (LLSHR ITChar) [l, r] = makeOp loc (LLSHR ITNative) [l, r]
+makeOp loc (LASHR ITChar) [l, r] = makeOp loc (LASHR ITNative) [l, r]
+makeOp loc (LCompl ITChar) [x] = makeOp loc (LCompl ITNative) [x]
+makeOp loc (LEq (ATInt ITChar)) [l, r] = makeOp loc (LEq (ATInt ITNative)) [l, r]
+makeOp loc (LSLt (ATInt ITChar)) [l, r] = makeOp loc (LSLt (ATInt ITNative)) [l, r]
+makeOp loc (LSLe (ATInt ITChar)) [l, r] = makeOp loc (LSLe (ATInt ITNative)) [l, r]
+makeOp loc (LSGt (ATInt ITChar)) [l, r] = makeOp loc (LSGt (ATInt ITNative)) [l, r]
+makeOp loc (LSGe (ATInt ITChar)) [l, r] = makeOp loc (LSGe (ATInt ITNative)) [l, r]
+makeOp loc (LLt ITChar) [l, r] = makeOp loc (LLt ITNative) [l, r]
+makeOp loc (LLe ITChar) [l, r] = makeOp loc (LLe ITNative) [l, r]
+makeOp loc (LGt ITChar) [l, r] = makeOp loc (LGt ITNative) [l, r]
+makeOp loc (LGe ITChar) [l, r] = makeOp loc (LGe ITNative) [l, r]
 
 makeOp loc (LPlus ATFloat) args = f64BinOp loc add args
 makeOp loc (LMinus ATFloat) args = f64BinOp loc sub args
@@ -781,7 +806,11 @@ makeOp loc LCrash [reg] = do
         invoke raiseError [str]
         unreachable
 
-makeOp _ _ _ = return $ return ()
+makeOp _ LNoOp _ = return $ return ()
+
+makeOp _ (LExternal _) _ = return $ return ()
+
+makeOp _ op args = error $ "makeOp not implemented (" ++ show (op, args) ++ ")"
 
 i32BinOp :: Reg
     -> (GenFun (Proxy I32) -> GenFun (Proxy I32) -> GenFun (Proxy I32))
