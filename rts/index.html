@@ -1,204 +1,216 @@
-<script>
-    let mem = null
-    let alloc = null
-
-    const ValType = {
-        Con: 0,
-        Int: 1,
-        BigInt: 2,
-        Float: 3,
-        String: 4,
-        StrOffset: 5,
-        Bit32: 6,
-        Bit64: 7
-    }
-
-    function loadValue(addr) {
-        const size = mem.getUint32(addr + 4, true)
-        switch (mem.getUint8(addr)) {
-            case ValType.Con:
-                return { type: 'con', size, tag: mem.getUint32(addr + 8, true), addr }
-            case ValType.Int:
-                return { type: 'int', size, val: mem.getInt32(addr + 8, true), addr }
-            case ValType.Bit32:
-                return { type: 'bit32', size, val: mem.getInt32(addr + 8, true), addr }
-            case ValType.Bit64:
-                return {
-                    type: 'bit64',
-                    size,
-                    val: [mem.getUint32(addr + 12, true), mem.getUint32(addr + 8, true)],
-                    addr
+<html>
+    <head>
+        <meta charset="utf-8" />
+    </head>
+    <body>
+        <script>
+            let mem = null
+            let alloc = null
+            let main = null
+        
+            const ValType = {
+                Con: 0,
+                Int: 1,
+                BigInt: 2,
+                Float: 3,
+                String: 4,
+                StrOffset: 5,
+                Bit32: 6,
+                Bit64: 7
+            }
+        
+            function loadValue(addr) {
+                const size = mem.getUint32(addr + 4, true)
+                switch (mem.getUint8(addr)) {
+                    case ValType.Con:
+                        return { type: 'con', size, tag: mem.getUint32(addr + 8, true), addr }
+                    case ValType.Int:
+                        return { type: 'int', size, val: mem.getInt32(addr + 8, true), addr }
+                    case ValType.Bit32:
+                        return { type: 'bit32', size, val: mem.getInt32(addr + 8, true), addr }
+                    case ValType.Bit64:
+                        return {
+                            type: 'bit64',
+                            size,
+                            val: [mem.getUint32(addr + 12, true), mem.getUint32(addr + 8, true)],
+                            addr
+                        }
+                    case ValType.BigInt:
+                        return {
+                            type: 'big',
+                            size,
+                            val: [mem.getUint32(addr + 12, true), mem.getUint32(addr + 8, true)],
+                            addr
+                        }
+                    case ValType.Float:
+                        return { type: 'float', size, val: mem.getFloat64(addr + 8, true), addr }
+                    case ValType.String:
+                        const len = mem.getUint32(addr + 8, true)
+                        return {
+                            type: 'string',
+                            size,
+                            len,
+                            val: readString(addr + 12, len),
+                            addr
+                        }
+                    default:
+                        throw new Error('Unknown value. Type tag: ' + mem.getUint8(addr))
                 }
-            case ValType.BigInt:
-                return {
-                    type: 'big',
-                    size,
-                    val: [mem.getUint32(addr + 12, true), mem.getUint32(addr + 8, true)],
-                    addr
-                }
-            case ValType.Float:
-                return { type: 'float', size, val: mem.getFloat64(addr + 8, true), addr }
-            case ValType.String:
+            }
+        
+            function loadString(addr) {
                 const len = mem.getUint32(addr + 8, true)
-                return {
-                    type: 'string',
-                    size,
-                    len,
-                    val: readString(addr + 12, len),
-                    addr
+                return readString(addr + 12, len)
+            }
+        
+            function aligned(size) {
+                return (size + 3) & 0xFFFFFFFC
+            }
+        
+            function gc(requestedSize) {
+                console.log('gc', requestedSize)
+            }
+        
+            function strWrite(strAddr) {
+                console.log('str write', loadValue(strAddr))
+                console.log(loadString(strAddr))
+                return makeInt(0)
+            }
+        
+            function getCharWidth(code) {
+                if (code < 0x80) {
+                    return 1
                 }
-            default:
-                throw new Error('Unknown value. Type tag: ' + mem.getUint8(addr))
-        }
-    }
-
-    function loadString(addr) {
-        const len = mem.getUint32(addr + 8, true)
-        return readString(addr + 12, len)
-    }
-
-    function aligned(size) {
-        return (size + 3) & 0xFFFFFFFC
-    }
-
-    function gc(requestedSize) {
-        console.log('gc', requestedSize)
-    }
-
-    function strWrite(strAddr) {
-        console.log('str write', loadValue(strAddr))
-        console.log(loadString(strAddr))
-        return makeInt(0)
-    }
-
-    function getCharWidth(code) {
-        if (code < 0x80) {
-            return 1
-        }
-        if (code >= 0x80 && code < 0x800) {
-            return 2
-        }
-        if (code >= 0x800 && code < 0x8000) {
-            return 3
-        }
-        return 4
-    }
-
-    function getStringSizeInBytes(str) {
-        let size = 0
-        for (let i = 0; i < str.length; i++) {
-            size += getCharWidth(str.charCodeAt(i))
-        }
-        return size
-    }
-
-    function writeChar(dst, code) {
-        const width = getCharWidth(code)
-        switch (width) {
-            case 1:
-                mem.setUint8(dst, code)
-                break
-            case 2:
-                mem.setUint8(dst, (code >> 6) | 0xC0)
-                mem.setUint8(dst + 1, (code & 0x3F) | 0x80)
-                break
-            case 3:
-                mem.setUint8(dst, (code >> 12) | 0xE0)
-                mem.setUint8(dst + 1, ((code >> 6) & 0x3F) | 0x80)
-                mem.setUint8(dst + 2, (code & 0x3F) | 0x80)
-                break
-            default:
-                mem.setUint8(dst, (code >> 18) | 0xF0)
-                mem.setUint8(dst + 1, ((code >> 12) & 0x3F) | 0x80)
-                mem.setUint8(dst + 2, ((code >> 6) & 0x3F) | 0x80)
-                mem.setUint8(dst + 3, (code & 0x3F) | 0x80)
-        }
-        return width
-    }
-
-    function readString(addr, len) {
-        const codes = new Array(len)
-        for (let i = 0, next = addr; i < len; i++) {
-            const byte = mem.getUint8(next)
-            if ((byte & 0x80) == 0) { // one byte width
-                codes[i] = byte
-                next += 1
+                if (code >= 0x80 && code < 0x800) {
+                    return 2
+                }
+                if (code >= 0x800 && code < 0x8000) {
+                    return 3
+                }
+                return 4
             }
-            else if ((byte & 0xE0) == 0xC0) { // two bytes width
-                codes[i] = byte & 0x1F << 6
-                    | (mem.getUint8(addr + 1) & 0x3F)
-                next += 2
+        
+            function getStringSizeInBytes(str) {
+                let size = 0
+                for (let i = 0; i < str.length; i++) {
+                    size += getCharWidth(str.charCodeAt(i))
+                }
+                return size
             }
-            else if ((byte & 0xF0) == 0xE0) { // three bytes width
-                codes[i] = byte & 0x0F << 12
-                    | ((mem.getUint8(addr + 1) & 0x3F) << 6)
-                    | (mem.getUint8(addr + 2) & 0x3F)
-                next += 3
+        
+            function writeChar(dst, code) {
+                const width = getCharWidth(code)
+                switch (width) {
+                    case 1:
+                        mem.setUint8(dst, code)
+                        break
+                    case 2:
+                        mem.setUint8(dst, (code >> 6) | 0xC0)
+                        mem.setUint8(dst + 1, (code & 0x3F) | 0x80)
+                        break
+                    case 3:
+                        mem.setUint8(dst, (code >> 12) | 0xE0)
+                        mem.setUint8(dst + 1, ((code >> 6) & 0x3F) | 0x80)
+                        mem.setUint8(dst + 2, (code & 0x3F) | 0x80)
+                        break
+                    default:
+                        mem.setUint8(dst, (code >> 18) | 0xF0)
+                        mem.setUint8(dst + 1, ((code >> 12) & 0x3F) | 0x80)
+                        mem.setUint8(dst + 2, ((code >> 6) & 0x3F) | 0x80)
+                        mem.setUint8(dst + 3, (code & 0x3F) | 0x80)
+                }
+                return width
             }
-            else { // four bytes width
-                codes[i] = byte & 0x07 << 18
-                | ((mem.getUint8(addr + 1) & 0x3F) << 12)
-                | ((mem.getUint8(addr + 2) & 0x3F) << 6)
-                | (mem.getUint8(addr + 3) & 0x3F)
-                next += 4
+        
+            function readString(addr, len) {
+                const codes = new Array(len)
+                for (let i = 0, next = addr; i < len; i++) {
+                    const byte = mem.getUint8(next)
+                    if ((byte & 0x80) == 0) { // one byte width
+                        codes[i] = byte
+                        next += 1
+                    }
+                    else if ((byte & 0xE0) == 0xC0) { // two bytes width
+                        codes[i] = (byte & 0x1F) << 6
+                            | (mem.getUint8(next + 1) & 0x3F)
+                        next += 2
+                    }
+                    else if ((byte & 0xF0) == 0xE0) { // three bytes width
+                        codes[i] = (byte & 0x0F) << 12
+                            | ((mem.getUint8(next + 1) & 0x3F) << 6)
+                            | (mem.getUint8(next + 2) & 0x3F)
+                        next += 3
+                    }
+                    else { // four bytes width
+                        codes[i] = byte & 0x07 << 18
+                        | ((mem.getUint8(next + 1) & 0x3F) << 12)
+                        | ((mem.getUint8(next + 2) & 0x3F) << 6)
+                        | (mem.getUint8(next + 3) & 0x3F)
+                        next += 4
+                    }
+                }
+                return String.fromCharCode.apply(String, codes)
             }
-        }
-        return String.fromCharCode.apply(String, codes)
-    }
+        
+            function makeString(str) {
+                const size = 12 + getStringSizeInBytes(str)
+                const addr = alloc(size)
+                mem.setUint8(addr, ValType.String)
+                mem.setUint8(addr + 1, !str ? 1 : 0)
+                mem.setUint32(addr + 8, str.length, true)
+                for (let i = 0, cur = addr + 12; i <= str.length; i++) {
+                    cur += writeChar(cur, str.charCodeAt(i))
+                }
+                return addr
+            }
+        
+            function makeInt(val) {
+                const addr = alloc(12)
+                mem.setUint8(addr, ValType.Int)
+                mem.setInt32(addr + 8, val, true)
+                return addr
+            }
+        
+            function intStr(intAddr) {
+                const val = mem.getUint32(intAddr + 8, true) | 0
+                const res = makeString(val.toString())
+                console.log('int to str', loadValue(intAddr), loadValue(res))
+                return res
+            }
+        
+            function raiseError(strAddr) {
+                throw new Error('Idris Error: ' + loadString(strAddr))
+            }
+        
+            function printConstSection(end) {
+                const vals = []
+                let i = 0
+                while (i < end) {
+                    const val = loadValue(i)
+                    vals.push(val)
+                    i += aligned(val.size)
+                }
+                console.log('CONST SECTION', vals)
+            }
 
-    function makeString(str) {
-        const size = 12 + getStringSizeInBytes(str)
-        const addr = alloc(size)
-        mem.setUint8(addr, ValType.String)
-        mem.setUint8(addr + 1, !str ? 1 : 0)
-        mem.setUint32(addr + 8, str.length, true)
-        for (let i = 0, cur = addr + 12; i <= str.length; i++) {
-            cur += writeChar(cur, str.charCodeAt(i))
-        }
-        return addr
-    }
-
-    function makeInt(val) {
-        const addr = alloc(12)
-        mem.setUint8(addr, ValType.Int)
-        mem.setInt32(addr + 8, val, true)
-        return addr
-    }
-
-    function intStr(intAddr) {
-        const val = mem.getUint32(intAddr + 8, true) | 0
-        const res = makeString(val.toString())
-        console.log('int to str', loadValue(intAddr), loadValue(res))
-        return res
-    }
-
-    function raiseError(strAddr) {
-        console.log('raise error', strAddr)
-        throw new Error('Idris Error')
-    }
-
-    function printConstSection(end) {
-        const vals = []
-        let i = 0
-        while (i < end) {
-            const val = loadValue(i)
-            vals.push(val)
-            i += aligned(val.size)
-        }
-        console.log('CONST SECTION', vals)
-    }
-
-    fetch('fact.wasm').then(response =>
-        response.arrayBuffer()
-    ).then(bytes => {
-        return WebAssembly.instantiate(bytes, {
-            rts: { raiseError, gc, strWrite, intStr }
-        })
-    }).then(results => {
-        const {alloc: a, mem: m, main, stackStart} = results.instance.exports
-        mem = new DataView(m.buffer)
-        alloc = a
-        printConstSection(stackStart)
-        main(stackStart)
-    })
-</script>
+            function printVal(addr) {
+                console.log('print value from idris', loadValue(addr))
+            }
+        
+            fetch('fact.wasm').then(response =>
+                response.arrayBuffer()
+            ).then(bytes => {
+                return WebAssembly.instantiate(bytes, {
+                    rts: { raiseError, gc, strWrite, intStr, printVal }
+                })
+            }).then(results => {
+                const {alloc: a, mem: m, main: entry, stackStart} = results.instance.exports
+                mem = new DataView(m.buffer)
+                alloc = a
+                printConstSection(stackStart)
+                main = () => entry(stackStart)
+                main()
+            })
+        </script>
+    </body>
+</html>

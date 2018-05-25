@@ -45,6 +45,7 @@ mkWasm defs stackSize heapSize =
         raiseError <- importFunction "rts" "raiseError" (FuncType [I32] [])
         strWrite <- importFunction "rts" "strWrite" (FuncType [I32] [I32])
         intStr <- importFunction "rts" "intStr" (FuncType [I32] [I32])
+        printVal <- importFunction "rts" "printVal" (FuncType [I32] [])
         exportMemory "mem" =<< memory 20 Nothing
     
         stackStart <- exportGlobal "stackStart" =<< global Const i32 0
@@ -151,7 +152,7 @@ mkWasm defs stackSize heapSize =
             byte <- local i32
             res <- local i32
             byte .= load8u i32 addr 0 0
-            ifExpr i32 (eqz $ byte `and` i32c 0xE0)
+            ifExpr i32 (eqz $ byte `and` i32c 0x80)
                 (const $ packInt byte)
                 (const $ ifExpr i32 ((byte `and` i32c 0xE0) `eq` i32c 0xC0)
                     (const $ packInt
@@ -195,19 +196,19 @@ mkWasm defs stackSize heapSize =
             end <- local i32
             size .= load i32 a 4 2
             ifExpr i32 (a `eq` b)
-                (const $ packInt $ i32c 1)
+                (const $ i32c 1)
                 (const $ ifExpr i32 (size `ne` load i32 b 4 2)
-                    (const $ packInt $ i32c 0)
+                    (const $ i32c 0)
                     (const $ do
                         curA .= (a `add` i32c 12)
                         curB .= (b `add` i32c 12)
                         end .= (a `add` size)
                         while (curA `lt_u` end) $ const $ do
                             when (load8u i32 curA 0 0 `ne` load8u i32 curB 0 0)
-                                (finish $ packInt $ i32c 0)
+                                (finish $ i32c 0)
                             inc 1 curA
                             inc 1 curB
-                        packInt $ i32c 1
+                        i32c 1
                     )
                 )
         charWidth <- fun $ do
@@ -280,6 +281,7 @@ mkWasm defs stackSize heapSize =
                 strWriteFn = strWrite,
                 intStrFn = intStr,
                 readCharFn = readChar,
+                printValFn = printVal,
                 symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
@@ -328,7 +330,8 @@ data GlobalBindings = GB {
     strConsFn :: Natural,
     strWriteFn :: Natural,
     readCharFn :: Natural,
-    intStrFn :: Natural
+    intStrFn :: Natural,
+    printValFn :: Natural
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -656,7 +659,8 @@ makeOp loc LStrEq [l, r] = do
     a <- getRegVal l
     b <- getRegVal r
     strEq <- asks strEqFn
-    setRegVal loc $ call i32 strEq [a, b]
+    intCtor <- genInt
+    setRegVal loc $ intCtor $ call i32 strEq [a, b]
 makeOp loc LStrLen [reg] = do
     strAddr <- getRegVal reg
     ctor <- genInt
@@ -674,11 +678,18 @@ makeOp loc LStrIndex [strReg, idxReg] = do
     str <- getRegVal strReg
     idx <- getRegVal idxReg
     strIndex <- asks strIndexFn
-    setRegVal loc $ call i32 strIndex [str, idx]
+    setRegVal loc $ call i32 strIndex [str, load i32 idx 8 2]
 makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
     setRegVal loc $ call i32 strWrite [str]
+
+makeOp loc LCrash [reg] = do
+    str <- getRegVal reg
+    raiseError <- asks raiseErrorFn
+    return $ do
+        invoke raiseError [str]
+        unreachable
 
 makeOp _ _ _ = return $ return ()
 
