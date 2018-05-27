@@ -46,9 +46,9 @@ mkWasm defs stackSize heapSize =
         strWrite <- importFunction "rts" "strWrite" i32 [I32]
         intStr <- importFunction "rts" "intStr" i32 [I32]
         printVal <- importFunction "rts" "printVal" () [I32]
-        exportMemory "mem" =<< memory 20 Nothing
+        export "mem" $ memory 20 Nothing
     
-        stackStart <- exportGlobal "stackStart" =<< global Const i32 0
+        stackStart <- export "stackStart" $ global Const i32 0
         stackEnd <- global Const i32 0
         stackBase <- global Mut i32 0
         stackTop <- global Mut i32 0
@@ -60,19 +60,19 @@ mkWasm defs stackSize heapSize =
         heapNext <- global Mut i32 0
         heapEnd <- global Mut i32 0
     
-        exportFunction "getHeapStart" =<< (fun i32 $ ret heapStart)
-        exportFunction "setHeapStart" =<< (fun () $ do
+        export "getHeapStart" $ fun i32 $ ret heapStart
+        export "setHeapStart" $ fun () $ do
             val <- param i32
-            heapStart .= val)
-        exportFunction "getHeapEnd" =<< (fun i32 $ ret heapEnd)
-        exportFunction "setHeapEnd" =<< (fun () $ do
+            heapStart .= val
+        export "getHeapEnd" $ fun i32 $ ret heapEnd
+        export "setHeapEnd" $ fun () $ do
             val <- param i32
-            heapEnd .= val)
+            heapEnd .= val
         
         aligned <- fun i32 $ do
             size <- param i32
             (size `add` i32c 3) `and` i32c 0xFFFFFFFC
-        alloc <- exportFunction "alloc" =<< (funRec i32 $ \self -> do
+        alloc <- export "alloc" $ funRec i32 $ \self -> do
             size <- param i32
             alignedSize <- local i32
             addr <- local i32
@@ -81,8 +81,8 @@ mkWasm defs stackSize heapSize =
             if' i32 ((heapNext `add` alignedSize) `lt_u` heapEnd)
                 (do
                     addr .= heapNext
-                    heapNext .= (heapNext `add` alignedSize)
-                    for (i .= addr) (i `lt_u` heapNext) (i .= (i `add` i32c 4)) $ do
+                    heapNext .= heapNext `add` alignedSize
+                    for (i .= addr) (i `lt_u` heapNext) (i .= i `add` i32c 4) $ do
                         store i (i32c 0) 0 2
                     store addr size 4 2
                     ret addr
@@ -91,25 +91,24 @@ mkWasm defs stackSize heapSize =
                     call gc [arg size]
                     call self [arg size]
                 )
-            )
         slide <- fun () $ do
             n <- param i32
             source <- local i32
             dist <- local i32
             end <- local i32
             dist .= stackBase
-            end .= (stackTop `add` (n `mul` i32c 4))
-            for (source .= stackTop) (source `lt_u` end) (source .= (source `add` i32c 4)) $ do
+            end .= stackTop `add` (n `mul` i32c 4)
+            for (source .= stackTop) (source `lt_u` end) (source .= source `add` i32c 4) $ do
                 store source dist 0 2
-                dist .= (dist `add` i32c 4)
+                dist .= dist `add` i32c 4
         reserve <- fun () $ do
             num <- param i32
             i <- local i32
             newStackTop <- local i32
-            newStackTop .= (stackTop `add` (num `mul` i32c 4))
+            newStackTop .= stackTop `add` (num `mul` i32c 4)
             if' () (stackEnd `lt_u` newStackTop)
                 (unreachable)
-                (for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ do
+                (for (i .= stackTop) (i `lt_u` newStackTop) (i .= i `add` i32c 4) $ do
                     store i (i32c 0) 0 2
                 )
         memcpy <- fun () $ do
@@ -117,7 +116,7 @@ mkWasm defs stackSize heapSize =
             src <- param i32
             len <- param i32
             i <- local i32
-            for (i .= i32c 0) (i `lt_u` len) (i .= (i `add` i32c 1)) $ do
+            for (i .= i32c 0) (i `lt_u` len) (i .= i `add` i32c 1) $ do
                 store8 (dst `add` i) (load8u i32 (src `add` i) 0 0) 0 0
         strConcat <- fun i32 $ do
             a <- param i32
@@ -205,9 +204,9 @@ mkWasm defs stackSize heapSize =
                 (if' i32 (size `ne` load i32 b 4 2)
                     (i32c 0)
                     (do
-                        curA .= (a `add` i32c 12)
-                        curB .= (b `add` i32c 12)
-                        end .= (a `add` size)
+                        curA .= a `add` i32c 12
+                        curB .= b `add` i32c 12
+                        end .= a `add` size
                         while (curA `lt_u` end) $ do
                             when (load8u i32 curA 0 0 `ne` load8u i32 curB 0 0)
                                 (finish $ i32c 0)
@@ -224,8 +223,8 @@ mkWasm defs stackSize heapSize =
             end <- local i32
             i .= load i32 a 4 2
             j .= load i32 b 4 2
-            end .= (a `add` (if' i32 (i `lt_u` j) (ret i) (ret j)))
-            for (i .= (a `add` i32c 12) >> j .= (b `add` i32c 12)) (i `lt_u` end) (inc 1 i >> inc 1 j) $ do
+            end .= a `add` (if' i32 (i `lt_u` j) (ret i) (ret j))
+            for (i .= a `add` i32c 12 >> j .= b `add` i32c 12) (i `lt_u` end) (inc 1 i >> inc 1 j) $ do
                 when (load8u i32 i 0 0 `lt_u` load8u i32 j 0 0) $ finish $ i32c 1
                 when (load8u i32 i 0 0 `gt_u` load8u i32 j 0 0) $ finish $ i32c 0
             load i32 a 4 2 `lt_u` load i32 b 4 2
@@ -327,7 +326,7 @@ mkWasm defs stackSize heapSize =
         let GS { constSectionEnd, constSection } = st
         sequence_ funcs
         case Map.lookup (MN 0 "runMain") $ symbols bindings of
-            Just idx -> exportFunction "main" idx >> return ()
+            Just idx -> export "main" idx >> return ()
             Nothing -> return ()
         setGlobalInitializer stackStart $ fromIntegral constSectionEnd
         setGlobalInitializer stackEnd $ fromIntegral constSectionEnd + fromIntegral stackSize
