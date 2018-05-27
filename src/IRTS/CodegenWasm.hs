@@ -41,11 +41,11 @@ codegenWasm ci = do
 mkWasm :: [(Name, [BC])] -> Int -> Int -> Module
 mkWasm defs stackSize heapSize =
     genMod $ do
-        gc <- importFunction "rts" "gc" (FuncType [I32] [])
-        raiseError <- importFunction "rts" "raiseError" (FuncType [I32] [])
-        strWrite <- importFunction "rts" "strWrite" (FuncType [I32] [I32])
-        intStr <- importFunction "rts" "intStr" (FuncType [I32] [I32])
-        printVal <- importFunction "rts" "printVal" (FuncType [I32] [])
+        gc <- importFunction "rts" "gc" () [I32]
+        raiseError <- importFunction "rts" "raiseError" () [I32]
+        strWrite <- importFunction "rts" "strWrite" i32 [I32]
+        intStr <- importFunction "rts" "intStr" i32 [I32]
+        printVal <- importFunction "rts" "printVal" () [I32]
         exportMemory "mem" =<< memory 20 Nothing
     
         stackStart <- exportGlobal "stackStart" =<< global Const i32 0
@@ -60,112 +60,104 @@ mkWasm defs stackSize heapSize =
         heapNext <- global Mut i32 0
         heapEnd <- global Mut i32 0
     
-        exportFunction "getHeapStart" =<< (fun $ do
-            result i32
-            ret heapStart)
-        exportFunction "setHeapStart" =<< (fun $ do
+        exportFunction "getHeapStart" =<< (fun i32 $ ret heapStart)
+        exportFunction "setHeapStart" =<< (fun () $ do
             val <- param i32
             heapStart .= val)
-        exportFunction "getHeapEnd" =<< (fun $ do
-            result i32
-            ret heapEnd)
-        exportFunction "setHeapEnd" =<< (fun $ do
+        exportFunction "getHeapEnd" =<< (fun i32 $ ret heapEnd)
+        exportFunction "setHeapEnd" =<< (fun () $ do
             val <- param i32
             heapEnd .= val)
         
-        aligned <- fun $ do
+        aligned <- fun i32 $ do
             size <- param i32
-            result i32
             (size `add` i32c 3) `and` i32c 0xFFFFFFFC
-        alloc <- exportFunction "alloc" =<< (funRec $ \self -> do
+        alloc <- exportFunction "alloc" =<< (funRec i32 $ \self -> do
             size <- param i32
-            result i32
             alignedSize <- local i32
             addr <- local i32
             i <- local i32
-            alignedSize .= call i32 aligned [arg size]
-            ifExpr i32 ((heapNext `add` alignedSize) `lt_u` heapEnd)
-                (const $ do
+            alignedSize .= call aligned [arg size]
+            if' i32 ((heapNext `add` alignedSize) `lt_u` heapEnd)
+                (do
                     addr .= heapNext
                     heapNext .= (heapNext `add` alignedSize)
-                    for (i .= addr) (i `lt_u` heapNext) (i .= (i `add` i32c 4)) $ const $ do
+                    for (i .= addr) (i `lt_u` heapNext) (i .= (i `add` i32c 4)) $ do
                         store i (i32c 0) 0 2
                     store addr size 4 2
                     ret addr
                 )
-                (const $ do
-                    invoke gc [arg size]
-                    call i32 self [arg size]
+                (do
+                    call gc [arg size]
+                    call self [arg size]
                 )
             )
-        slide <- fun $ do
+        slide <- fun () $ do
             n <- param i32
             source <- local i32
             dist <- local i32
             end <- local i32
             dist .= stackBase
             end .= (stackTop `add` (n `mul` i32c 4))
-            for (source .= stackTop) (source `lt_u` end) (source .= (source `add` i32c 4)) $ const $ do
+            for (source .= stackTop) (source `lt_u` end) (source .= (source `add` i32c 4)) $ do
                 store source dist 0 2
                 dist .= (dist `add` i32c 4)
-        reserve <- fun $ do
+        reserve <- fun () $ do
             num <- param i32
             i <- local i32
             newStackTop <- local i32
             newStackTop .= (stackTop `add` (num `mul` i32c 4))
-            ifStmt (stackEnd `lt_u` newStackTop)
-                (const unreachable)
-                (const $ for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ const $ do
+            if' () (stackEnd `lt_u` newStackTop)
+                (unreachable)
+                (for (i .= stackTop) (i `lt_u` newStackTop) (i .= (i `add` i32c 4)) $ do
                     store i (i32c 0) 0 2
                 )
-        memcpy <- fun $ do
+        memcpy <- fun () $ do
             dst <- param i32
             src <- param i32
             len <- param i32
             i <- local i32
-            for (i .= i32c 0) (i `lt_u` len) (i .= (i `add` i32c 1)) $ const $ do
+            for (i .= i32c 0) (i `lt_u` len) (i .= (i `add` i32c 1)) $ do
                 store8 (dst `add` i) (load8u i32 (src `add` i) 0 0) 0 0
-        strConcat <- fun $ do
+        strConcat <- fun i32 $ do
             a <- param i32
             b <- param i32
-            result i32
             aSize <- local i32
             bSize <- local i32
             addr <- local i32
             aSize .= load i32 a 4 2
             bSize .= load i32 b 4 2
-            addr .= call i32 alloc [aSize `add` bSize `sub` i32c 12]
+            addr .= call alloc [aSize `add` bSize `sub` i32c 12]
             store8 addr (i32c $ fromEnum String) 0 0
             store addr (load i32 a 8 2 `add` load i32 b 8 2) 8 2
-            invoke memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
-            invoke memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
+            call memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
+            call memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
             ret addr
         let packInt :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
             packInt val = do
-                tmpReg .= call i32 alloc [i32c 12]
+                tmpReg .= call alloc [i32c 12]
                 store8 tmpReg (i32c $ fromEnum Int) 0 0
                 store tmpReg val 8 2
                 ret tmpReg
-        readChar <- fun $ do
+        readChar <- fun i32 $ do
             addr <- param i32
-            result i32
             byte <- local i32
             res <- local i32
             byte .= load8u i32 addr 0 0
-            ifExpr i32 (eqz $ byte `and` i32c 0x80)
-                (const $ packInt byte)
-                (const $ ifExpr i32 ((byte `and` i32c 0xE0) `eq` i32c 0xC0)
-                    (const $ packInt
+            if' i32 (eqz $ byte `and` i32c 0x80)
+                (packInt byte)
+                (if' i32 ((byte `and` i32c 0xE0) `eq` i32c 0xC0)
+                    (packInt
                         $ ((byte `and` i32c 0x1F) `shl` i32c 6)
                         `or` (load8u i32 addr 1 0 `and` i32c 0x3F)
                     )
-                    (const $ ifExpr i32 ((byte `and` i32c 0xF0) `eq` i32c 0xE0)
-                        (const $ packInt
+                    (if' i32 ((byte `and` i32c 0xF0) `eq` i32c 0xE0)
+                        (packInt
                             $ ((byte `and` i32c 0x0F) `shl` i32c 12)
                             `or` ((load8u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 6)
                             `or` (load8u i32 addr 2 0 `and` i32c 0x3F)
                         )
-                        (const $ packInt
+                        (packInt
                             $ ((byte `and` i32c 0x07) `shl` i32c 18)
                             `or` ((load8u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 12)
                             `or` ((load8u i32 addr 2 0 `and` i32c 0x3F) `shl` i32c 6)
@@ -173,54 +165,50 @@ mkWasm defs stackSize heapSize =
                         )
                     )
                 )
-        strOffset <- fun $ do
+        strOffset <- fun i32 $ do
             addr <- param i32
             idx <- param i32
-            result i32
-            while (idx `ne` i32c 0) $ const $ do
+            while (idx `ne` i32c 0) $ do
                 when ((load8u i32 addr 0 0 `and` i32c 0xC0) `ne` i32c 0x80) $ dec 1 idx
                 inc 1 addr
-            while ((load8u i32 addr 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ const $ inc 1 addr
+            while ((load8u i32 addr 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ inc 1 addr
             ret addr
-        strIndex <- fun $ do
+        strIndex <- fun i32 $ do
             addr <- param i32
             idx <- param i32
-            result i32
-            call i32 readChar [call i32 strOffset [arg $ addr `add` i32c 12, arg idx]]
-        strSubstr <- fun $ do
+            call readChar [call strOffset [arg $ addr `add` i32c 12, arg idx]]
+        strSubstr <- fun i32 $ do
             addr <- param i32
             offset <- param i32
             length <- param i32
-            result i32
             start <- local i32
             end <- local i32
             size <- local i32
-            start .= call i32 strOffset [arg $ addr `add` i32c 12, arg offset]
-            end .= call i32 strOffset [arg start, arg length]
+            start .= call strOffset [arg $ addr `add` i32c 12, arg offset]
+            end .= call strOffset [arg start, arg length]
             size .= (end `sub` start)
-            addr .= call i32 alloc [size `add` i32c 12]
+            addr .= call alloc [size `add` i32c 12]
             store8 addr (i32c $ fromEnum String) 0 0
             store addr length 8 2
-            invoke memcpy [arg (addr `add` i32c 12), arg start, arg size]
+            call memcpy [arg (addr `add` i32c 12), arg start, arg size]
             ret addr
-        strEq <- fun $ do
+        strEq <- fun i32 $ do
             a <- param i32
             b <- param i32
-            result i32
             size <- local i32
             curA <- local i32
             curB <- local i32
             end <- local i32
             size .= load i32 a 4 2
-            ifExpr i32 (a `eq` b)
-                (const $ i32c 1)
-                (const $ ifExpr i32 (size `ne` load i32 b 4 2)
-                    (const $ i32c 0)
-                    (const $ do
+            if' i32 (a `eq` b)
+                (i32c 1)
+                (if' i32 (size `ne` load i32 b 4 2)
+                    (i32c 0)
+                    (do
                         curA .= (a `add` i32c 12)
                         curB .= (b `add` i32c 12)
                         end .= (a `add` size)
-                        while (curA `lt_u` end) $ const $ do
+                        while (curA `lt_u` end) $ do
                             when (load8u i32 curA 0 0 `ne` load8u i32 curB 0 0)
                                 (finish $ i32c 0)
                             inc 1 curA
@@ -228,49 +216,47 @@ mkWasm defs stackSize heapSize =
                         i32c 1
                     )
                 )
-        strLt <- fun $ do
+        strLt <- fun i32 $ do
             a <- param i32
             b <- param i32
-            result i32
             i <- local i32
             j <- local i32
             end <- local i32
             i .= load i32 a 4 2
             j .= load i32 b 4 2
-            end .= (a `add` (ifExpr i32 (i `lt_u` j) (const $ ret i) (const $ ret j)))
-            for (i .= (a `add` i32c 12) >> j .= (b `add` i32c 12)) (i `lt_u` end) (inc 1 i >> inc 1 j) $ const $ do
+            end .= (a `add` (if' i32 (i `lt_u` j) (ret i) (ret j)))
+            for (i .= (a `add` i32c 12) >> j .= (b `add` i32c 12)) (i `lt_u` end) (inc 1 i >> inc 1 j) $ do
                 when (load8u i32 i 0 0 `lt_u` load8u i32 j 0 0) $ finish $ i32c 1
                 when (load8u i32 i 0 0 `gt_u` load8u i32 j 0 0) $ finish $ i32c 0
             load i32 a 4 2 `lt_u` load i32 b 4 2
-        charWidth <- fun $ do
+        charWidth <- fun i32 $ do
             code <- param i32
-            result i32
-            ifExpr i32 (code `lt_u` i32c 0x80)
-                (const $ i32c 1)
-                (const $ ifExpr i32 ((code `ge_u` i32c 0x80) `and` (code `lt_u` i32c 0x800))
-                    (const $ i32c 2)
-                    (const $ ifExpr i32 ((code `ge_u` i32c 0x800) `and` (code `lt_u` i32c 0x8000))
-                        (const $ i32c 3)
-                        (const $ i32c 4)
+            if' i32 (code `lt_u` i32c 0x80)
+                (i32c 1)
+                (if' i32 ((code `ge_u` i32c 0x80) `and` (code `lt_u` i32c 0x800))
+                    (i32c 2)
+                    (if' i32 ((code `ge_u` i32c 0x800) `and` (code `lt_u` i32c 0x8000))
+                        (i32c 3)
+                        (i32c 4)
                     )
                 )
-        storeChar <- fun $ do
+        storeChar <- fun () $ do
             addr <- param i32
             code <- param i32
-            ifStmt (code `lt_u` i32c 0x80)
-                (const $ store8 addr code 0 0)
-                (const $ ifStmt ((code `ge_u` i32c 0x80) `and` (code `lt_u` i32c 0x800))
-                    (const $ do
+            if' () (code `lt_u` i32c 0x80)
+                (store8 addr code 0 0)
+                (if' () ((code `ge_u` i32c 0x80) `and` (code `lt_u` i32c 0x800))
+                    (do
                         store8 addr ((code `shr_u` i32c 6) `or` i32c 0xC0) 0 0
                         store8 addr ((code `and` i32c 0x3F) `or` i32c 0x80) 1 0
                     )
-                    (const $ ifStmt ((code `ge_u` i32c 0x800) `and` (code `lt_u` i32c 0x8000))
-                        (const $ do
+                    (if' () ((code `ge_u` i32c 0x800) `and` (code `lt_u` i32c 0x8000))
+                        (do
                             store8 addr ((code `shr_u` i32c 12) `or` i32c 0xE0) 0 0
                             store8 addr (((code `shr_u` i32c 6) `and` i32c 0x3F) `or` i32c 0x80) 1 0
                             store8 addr ((code `and` i32c 0x3F) `or` i32c 0x80) 2 0
                         )
-                        (const $ do
+                        (do
                             store8 addr ((code `shr_u` i32c 18) `or` i32c 0xF0) 0 0
                             store8 addr (((code `shr_u` i32c 12) `and` i32c 0x3F) `or` i32c 0x80) 1 0
                             store8 addr (((code `shr_u` i32c 6) `and` i32c 0x3F) `or` i32c 0x80) 2 0
@@ -278,39 +264,37 @@ mkWasm defs stackSize heapSize =
                         )
                     )
                 )
-        strCons <- fun $ do
+        strCons <- fun i32 $ do
             char <- param i32
             tail <- param i32
-            result i32
             res <- local i32
             width <- local i32
             size <- local i32
-            width .= call i32 charWidth [arg char]
+            width .= call charWidth [arg char]
             size .= load i32 tail 4 2
-            res .= call i32 alloc [size `add` width]
+            res .= call alloc [size `add` width]
             store8 res (i32c $ fromEnum String) 0 0
             store res (load i32 tail 8 2 `add` i32c 1) 8 2
-            invoke storeChar [arg $ res `add` i32c 12, arg char]
-            invoke memcpy [res `add` i32c 12 `add` width, tail `add` i32c 12, size `sub` i32c 12]
+            call storeChar [arg $ res `add` i32c 12, arg char]
+            call memcpy [res `add` i32c 12 `add` width, tail `add` i32c 12, size `sub` i32c 12]
             ret res
-        strRev <- fun $ do
+        strRev <- fun i32 $ do
             addr <- param i32
-            result i32
             len <- local i32
             res <- local i32
             width <- local i32
             next <- local i32
             len .= load i32 addr 8 2
-            res .= call i32 alloc [load i32 addr 4 2]
+            res .= call alloc [load i32 addr 4 2]
             store8 res (i32c $ fromEnum String) 0 0
             store8 res (load i32 addr 1 2) 1 0
             store res len 8 2
             next .= (res `add` load i32 addr 4 2)
             addr .= (addr `add` i32c 12)
-            while (len `ne` i32c 0) $ const $ do
-                width .= (call i32 strOffset [arg addr, arg $ i32c 1] `sub` addr)
+            while (len `ne` i32c 0) $ do
+                width .= (call strOffset [arg addr, arg $ i32c 1] `sub` addr)
                 next .= (next `sub` width)
-                invoke memcpy [arg next, arg addr, arg width]
+                call memcpy [arg next, arg addr, arg width]
                 addr .= (addr `add` width)
                 dec 1 len
             ret res
@@ -337,7 +321,7 @@ mkWasm defs stackSize heapSize =
                 intStrFn = intStr,
                 readCharFn = readChar,
                 printValFn = printVal,
-                symbols = Map.fromList $ zipWith (,) (map fst defs) [defsStartFrom..]
+                symbols = Map.fromList $ zipWith (\name idx -> (name, Fn idx)) (map fst defs) [defsStartFrom..]
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
         let GS { constSectionEnd, constSection } = st
@@ -374,22 +358,22 @@ data GlobalBindings = GB {
     stackEndIdx :: Glob I32,
     returnValueIdx :: Glob I32,
     tmpIdx :: Glob I32,
-    symbols :: Map.Map Name Natural,
-    raiseErrorFn :: Natural,
-    slideFn :: Natural,
-    reserveFn :: Natural,
-    allocFn :: Natural,
-    strEqFn :: Natural,
-    strLtFn :: Natural,
-    strIndexFn :: Natural,
-    strConcatFn :: Natural,
-    strConsFn :: Natural,
-    strSubstrFn :: Natural,
-    strRevFn :: Natural,
-    strWriteFn :: Natural,
-    readCharFn :: Natural,
-    intStrFn :: Natural,
-    printValFn :: Natural
+    symbols :: Map.Map Name (Fn ()),
+    raiseErrorFn :: Fn (),
+    slideFn :: Fn (),
+    reserveFn :: Fn (),
+    allocFn :: Fn (Proxy I32),
+    strEqFn :: Fn (Proxy I32),
+    strLtFn :: Fn (Proxy I32),
+    strIndexFn :: Fn (Proxy I32),
+    strConcatFn :: Fn (Proxy I32),
+    strConsFn :: Fn (Proxy I32),
+    strSubstrFn :: Fn (Proxy I32),
+    strRevFn :: Fn (Proxy I32),
+    strWriteFn :: Fn (Proxy I32),
+    readCharFn :: Fn (Proxy I32),
+    intStrFn :: Fn (Proxy I32),
+    printValFn :: Fn ()
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -397,10 +381,10 @@ type WasmGen = StateT GenState (Reader GlobalBindings)
 runWasmGen :: GenState -> GlobalBindings -> WasmGen a -> (a, GenState)
 runWasmGen st bindings = flip runReader bindings . flip runStateT st
 
-mkFunc :: [BC] -> WasmGen (GenMod Natural)
+mkFunc :: [BC] -> WasmGen (GenMod (Fn ()))
 mkFunc byteCode = do
     body <- mapM bcToInstr byteCode
-    return $ fun $ do
+    return $ fun () $ do
         oldBase <- param i32
         myOldBase <- local i32
         sequence_ $ map ($ (oldBase, myOldBase)) body
@@ -418,16 +402,16 @@ bcToInstr (PROJECTINTO dst src idx) = do
 bcToInstr (CONSTCASE val branches defaultBranch) = genConstCase val branches defaultBranch
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
-    return $ \(_, myOldBase) -> invoke fnIdx [arg myOldBase]
+    return $ \(_, myOldBase) -> call fnIdx [arg myOldBase]
 bcToInstr (TAILCALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
-    return $ \(oldBase, _) -> invoke fnIdx [arg oldBase]
+    return $ \(oldBase, _) -> call fnIdx [arg oldBase]
 bcToInstr (SLIDE n)
     | n == 0 = return $ const $ return ()
     | n <= 4 = genSlide n
     | otherwise = do
         slide <- asks slideFn
-        return $ const $ invoke slide [i32c n]
+        return $ const $ call slide [i32c n]
 bcToInstr REBASE = do
     stackBase <- asks stackBaseIdx
     return $ \(oldBase, _) -> stackBase .= oldBase
@@ -436,7 +420,7 @@ bcToInstr (RESERVE n)
     | n <= 4 = genReserve n
     | otherwise = do
         reserve <- asks reserveFn
-        return $ const $ invoke reserve [i32c n]
+        return $ const $ call reserve [i32c n]
 bcToInstr (ADDTOP 0) = return $ const $ return ()
 bcToInstr (ADDTOP n) = do
     stackTop <- asks stackTopIdx
@@ -465,7 +449,7 @@ bcToInstr (NULL reg) = const <$> setRegVal reg (i32c 0)
 bcToInstr (ERROR str) = do
     raiseError <- asks raiseErrorFn
     strAddr <- makeConst (Str str)
-    return $ const $ invoke raiseError [strAddr]
+    return $ const $ call raiseError [strAddr]
 bcToInstr _ = return $ const $ return ()
 
 getRegVal :: Reg -> WasmGen (GenFun (Proxy I32))
@@ -510,9 +494,9 @@ genCase safe reg branches defaultBranch = do
         let conTag = load i32 addr 8 2
         let conGuard body
                 | safe = body
-                | otherwise = ifStmt conCheck (const body) (const defCode)
+                | otherwise = if' () conCheck body defCode
         let genSwitch [] = defCode
-            genSwitch ((tag, code):rest) = ifStmt (conTag `eq` i32c tag) (const code) $ const $ genSwitch rest
+            genSwitch ((tag, code):rest) = if' () (conTag `eq` i32c tag) code (genSwitch rest)
         conGuard $ genSwitch branchesCode
     where
         toFunGen :: (Int, [BC]) -> WasmGen (Int, ((Loc I32, Loc I32) -> GenFun ()))
@@ -538,7 +522,7 @@ genConstCase reg branches defaultBranch = do
         let defCode = sequence_ $ map ($ oldBases) defBody
         let branchesCode = map (\(cond, code) -> (cond, code oldBases)) branchesBody
         let genSwitch [] = defCode
-            genSwitch ((cond, code):rest) = ifStmt cond (const code) (const $ genSwitch rest)
+            genSwitch ((cond, code):rest) = if' () cond code (genSwitch rest)
         genSwitch branchesCode
     where
         toFunGen :: GenFun (Proxy I32) -> (Const, [BC]) -> WasmGen (GenFun (Proxy I32), ((Loc I32, Loc I32) -> GenFun ()))
@@ -554,7 +538,7 @@ genConstCase reg branches defaultBranch = do
         mkConstChecker c val pat | bigIntConst c = return $ eq (load i64 val 8 2) (load i64 pat 8 2)
         mkConstChecker c val pat | strConst c = do
             strEq <- asks strEqFn
-            return $ call i32 strEq [val, pat]
+            return $ call strEq [val, pat]
         mkConstChecker _ _valAddr _constAddr = return $ i32c 0
 
         intConst (I _) = True
@@ -585,9 +569,9 @@ genReserve n = do
     stackTop <- asks stackTopIdx
     stackEnd <- asks stackEndIdx
     return $ const $ do
-        ifStmt (stackEnd `lt_u` (stackTop `add` i32c (n * 4)))
-            (const unreachable)
-            (const $ forM_ [0..n-1] $ \i -> store stackTop (i32c 0) (i * 4) 2)
+        if' () (stackEnd `lt_u` (stackTop `add` i32c (n * 4)))
+            unreachable
+            (forM_ [0..n-1] $ \i -> store stackTop (i32c 0) (i * 4) 2)
 
 {-
 data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
@@ -742,7 +726,7 @@ makeOp loc (LTrunc ITBig ITNative) [reg] = do
 makeOp loc (LIntStr ITNative) [reg] = do
     val <- getRegVal reg
     intStr <- asks intStrFn
-    setRegVal loc $ call i32 intStr [val]
+    setRegVal loc $ call intStr [val]
 
 makeOp loc (LPlus (ATInt ITChar)) [l, r] = makeOp loc (LPlus (ATInt ITNative)) [l, r]
 makeOp loc (LMinus (ATInt ITChar)) [l, r] = makeOp loc (LMinus (ATInt ITNative)) [l, r]
@@ -776,19 +760,19 @@ makeOp loc LStrConcat [l, r] = do
     a <- getRegVal l
     b <- getRegVal r
     strConcat <- asks strConcatFn
-    setRegVal loc $ call i32 strConcat [a, b]
+    setRegVal loc $ call strConcat [a, b]
 makeOp loc LStrLt [l, r] = do
     a <- getRegVal l
     b <- getRegVal r
     strLt <- asks strLtFn
     intCtor <- genInt
-    setRegVal loc $ intCtor $ call i32 strLt [a, b]
+    setRegVal loc $ intCtor $ call strLt [a, b]
 makeOp loc LStrEq [l, r] = do
     a <- getRegVal l
     b <- getRegVal r
     strEq <- asks strEqFn
     intCtor <- genInt
-    setRegVal loc $ intCtor $ call i32 strEq [a, b]
+    setRegVal loc $ intCtor $ call strEq [a, b]
 makeOp loc LStrLen [reg] = do
     strAddr <- getRegVal reg
     ctor <- genInt
@@ -796,41 +780,41 @@ makeOp loc LStrLen [reg] = do
 makeOp loc LStrHead [reg] = do
     str <- getRegVal reg
     readChar <- asks readCharFn
-    setRegVal loc $ call i32 readChar [str `add` i32c 12]
+    setRegVal loc $ call readChar [str `add` i32c 12]
 makeOp loc LStrTail [reg] = do
     str <- getRegVal reg
     strSubstr <- asks strSubstrFn
-    setRegVal loc $ call i32 strSubstr [str, i32c 1, load i32 str 8 2 `sub` i32c 1]
+    setRegVal loc $ call strSubstr [str, i32c 1, load i32 str 8 2 `sub` i32c 1]
 makeOp loc LStrCons [charReg, tailReg] = do
     char <- getRegVal charReg
     tail <- getRegVal tailReg
     strCons <- asks strConsFn
-    setRegVal loc $ call i32 strCons [load i32 char 8 2, tail]
+    setRegVal loc $ call strCons [load i32 char 8 2, tail]
 makeOp loc LStrIndex [strReg, idxReg] = do
     str <- getRegVal strReg
     idx <- getRegVal idxReg
     strIndex <- asks strIndexFn
-    setRegVal loc $ call i32 strIndex [str, load i32 idx 8 2]
+    setRegVal loc $ call strIndex [str, load i32 idx 8 2]
 makeOp loc LStrRev [strReg] = do
     str <- getRegVal strReg
     strRev <- asks strRevFn
-    setRegVal loc $ call i32 strRev [str]
+    setRegVal loc $ call strRev [str]
 makeOp loc LStrSubstr [offsetReg, lengthReg, strReg] = do
     str <- getRegVal strReg
     off <- getRegVal offsetReg
     len <- getRegVal lengthReg
     strSubstr <- asks strSubstrFn
-    setRegVal loc $ call i32 strSubstr [str, load i32 off 8 2, load i32 len 8 2]
+    setRegVal loc $ call strSubstr [str, load i32 off 8 2, load i32 len 8 2]
 makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
-    setRegVal loc $ call i32 strWrite [str]
+    setRegVal loc $ call strWrite [str]
 
 makeOp loc LCrash [reg] = do
     str <- getRegVal reg
     raiseError <- asks raiseErrorFn
     return $ do
-        invoke raiseError [str]
+        call raiseError [str]
         unreachable
 
 makeOp _ LNoOp _ = return $ return ()
@@ -1000,7 +984,7 @@ genInt = do
     alloc <- asks allocFn
     tmp <- asks tmpIdx
     return $ \val -> do
-        tmp .= call i32 alloc [arg $ i32c (8 + 4)]
+        tmp .= call alloc [arg $ i32c (8 + 4)]
         store8 tmp (i32c $ fromEnum Int) 0 0
         store tmp val 8 2
         ret tmp
@@ -1021,7 +1005,7 @@ genFloat = do
     alloc <- asks allocFn
     tmp <- asks tmpIdx
     return $ \val -> do
-        tmp .= call i32 alloc [arg $ i32c (8 + 8)]
+        tmp .= call alloc [arg $ i32c (8 + 8)]
         store8 tmp (i32c $ fromEnum Float) 0 0
         store tmp val 8 2
         ret tmp
@@ -1065,7 +1049,7 @@ genBit32 = do
     alloc <- asks allocFn
     tmp <- asks tmpIdx
     return $ \val -> do
-        tmp .= call i32 alloc [arg $ i32c (8 + 4)]
+        tmp .= call alloc [arg $ i32c (8 + 4)]
         store8 tmp (i32c $ fromEnum Bit32) 0 0
         store tmp val 8 2
         ret tmp
@@ -1086,7 +1070,7 @@ genBit64 = do
     alloc <- asks allocFn
     tmp <- asks tmpIdx
     return $ \val -> do
-        tmp .= call i32 alloc [arg $ i32c (8 + 8)]
+        tmp .= call alloc [arg $ i32c (8 + 8)]
         store8 tmp (i32c $ fromEnum Bit64) 0 0
         store tmp val 8 2
         ret tmp
@@ -1108,7 +1092,7 @@ genBigInt = do
     alloc <- asks allocFn
     tmp <- asks tmpIdx
     return $ \val -> do
-        tmp .= call i32 alloc [arg $ i32c (8 + 8)]
+        tmp .= call alloc [arg $ i32c (8 + 8)]
         store8 tmp (i32c $ fromEnum Bit64) 0 0
         store tmp val 8 2
         ret tmp
@@ -1133,7 +1117,7 @@ genCon tag args = do
     tmp <- asks tmpIdx
     args' <- mapM getRegVal args
     return $ do
-        tmp .= call i32 alloc [arg $ i32c (8 + 4 + 4 * fromIntegral arity)]
+        tmp .= call alloc [arg $ i32c (8 + 4 + 4 * fromIntegral arity)]
         store8 tmp (i32c $ fromEnum Con) 0 0
         store16 tmp (i32c arity) 2 1
         store tmp (i32c tag) 8 2
