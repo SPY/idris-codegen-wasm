@@ -117,7 +117,22 @@ mkWasm defs stackSize heapSize =
             len <- param i32
             i <- local i32
             for (i .= i32c 0) (i `lt_u` len) (i .= i `add` i32c 1) $ do
-                store8 (dst `add` i) (load8u i32 (src `add` i) 0 0) 0 0
+                store8 (dst `add` i) (load8_u i32 (src `add` i) 0 0) 0 0
+        let packString :: (Producer size, OutType size ~ Proxy I32, Producer len, OutType len ~ Proxy I32)
+                => size
+                -> len
+                -> GenFun (Proxy I32)
+            packString size len = do
+                tmpReg .= call alloc [arg size]
+                store8 tmpReg (i32c $ fromEnum String) 0 0
+                store tmpReg len 8 2
+                ret tmpReg
+        let packInt :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
+            packInt val = do
+                tmpReg .= call alloc [i32c 12]
+                store8 tmpReg (i32c $ fromEnum Int) 0 0
+                store tmpReg val 8 2
+                ret tmpReg
         strConcat <- fun i32 $ do
             a <- param i32
             b <- param i32
@@ -126,41 +141,33 @@ mkWasm defs stackSize heapSize =
             addr <- local i32
             aSize .= load i32 a 4 2
             bSize .= load i32 b 4 2
-            addr .= call alloc [aSize `add` bSize `sub` i32c 12]
-            store8 addr (i32c $ fromEnum String) 0 0
-            store addr (load i32 a 8 2 `add` load i32 b 8 2) 8 2
+            addr .= packString (aSize `add` bSize `sub` i32c 12) (load i32 a 8 2 `add` load i32 b 8 2)
             call memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
             call memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
             ret addr
-        let packInt :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
-            packInt val = do
-                tmpReg .= call alloc [i32c 12]
-                store8 tmpReg (i32c $ fromEnum Int) 0 0
-                store tmpReg val 8 2
-                ret tmpReg
         readChar <- fun i32 $ do
             addr <- param i32
             byte <- local i32
             res <- local i32
-            byte .= load8u i32 addr 0 0
+            byte .= load8_u i32 addr 0 0
             if' i32 (eqz $ byte `and` i32c 0x80)
                 (packInt byte)
                 (if' i32 ((byte `and` i32c 0xE0) `eq` i32c 0xC0)
                     (packInt
                         $ ((byte `and` i32c 0x1F) `shl` i32c 6)
-                        `or` (load8u i32 addr 1 0 `and` i32c 0x3F)
+                        `or` (load8_u i32 addr 1 0 `and` i32c 0x3F)
                     )
                     (if' i32 ((byte `and` i32c 0xF0) `eq` i32c 0xE0)
                         (packInt
                             $ ((byte `and` i32c 0x0F) `shl` i32c 12)
-                            `or` ((load8u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 6)
-                            `or` (load8u i32 addr 2 0 `and` i32c 0x3F)
+                            `or` ((load8_u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 6)
+                            `or` (load8_u i32 addr 2 0 `and` i32c 0x3F)
                         )
                         (packInt
                             $ ((byte `and` i32c 0x07) `shl` i32c 18)
-                            `or` ((load8u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 12)
-                            `or` ((load8u i32 addr 2 0 `and` i32c 0x3F) `shl` i32c 6)
-                            `or` (load8u i32 addr 3 0 `and` i32c 0x3F)
+                            `or` ((load8_u i32 addr 1 0 `and` i32c 0x3F) `shl` i32c 12)
+                            `or` ((load8_u i32 addr 2 0 `and` i32c 0x3F) `shl` i32c 6)
+                            `or` (load8_u i32 addr 3 0 `and` i32c 0x3F)
                         )
                     )
                 )
@@ -168,9 +175,9 @@ mkWasm defs stackSize heapSize =
             addr <- param i32
             idx <- param i32
             while (idx `ne` i32c 0) $ do
-                when ((load8u i32 addr 0 0 `and` i32c 0xC0) `ne` i32c 0x80) $ dec 1 idx
+                when ((load8_u i32 addr 0 0 `and` i32c 0xC0) `ne` i32c 0x80) $ dec 1 idx
                 inc 1 addr
-            while ((load8u i32 addr 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ inc 1 addr
+            while ((load8_u i32 addr 0 0 `and` i32c 0xC0) `eq` i32c 0x80) $ inc 1 addr
             ret addr
         strIndex <- fun i32 $ do
             addr <- param i32
@@ -185,10 +192,8 @@ mkWasm defs stackSize heapSize =
             size <- local i32
             start .= call strOffset [arg $ addr `add` i32c 12, arg offset]
             end .= call strOffset [arg start, arg length]
-            size .= (end `sub` start)
-            addr .= call alloc [size `add` i32c 12]
-            store8 addr (i32c $ fromEnum String) 0 0
-            store addr length 8 2
+            size .= end `sub` start
+            addr .= packString (size `add` i32c 12) length
             call memcpy [arg (addr `add` i32c 12), arg start, arg size]
             ret addr
         strEq <- fun i32 $ do
@@ -208,7 +213,7 @@ mkWasm defs stackSize heapSize =
                         curB .= b `add` i32c 12
                         end .= a `add` size
                         while (curA `lt_u` end) $ do
-                            when (load8u i32 curA 0 0 `ne` load8u i32 curB 0 0)
+                            when (load8_u i32 curA 0 0 `ne` load8_u i32 curB 0 0)
                                 (finish $ i32c 0)
                             inc 1 curA
                             inc 1 curB
@@ -225,8 +230,8 @@ mkWasm defs stackSize heapSize =
             j .= load i32 b 4 2
             end .= a `add` (if' i32 (i `lt_u` j) (ret i) (ret j))
             for (i .= a `add` i32c 12 >> j .= b `add` i32c 12) (i `lt_u` end) (inc 1 i >> inc 1 j) $ do
-                when (load8u i32 i 0 0 `lt_u` load8u i32 j 0 0) $ finish $ i32c 1
-                when (load8u i32 i 0 0 `gt_u` load8u i32 j 0 0) $ finish $ i32c 0
+                when (load8_u i32 i 0 0 `lt_u` load8_u i32 j 0 0) $ finish $ i32c 1
+                when (load8_u i32 i 0 0 `gt_u` load8_u i32 j 0 0) $ finish $ i32c 0
             load i32 a 4 2 `lt_u` load i32 b 4 2
         charWidth <- fun i32 $ do
             code <- param i32
@@ -271,9 +276,7 @@ mkWasm defs stackSize heapSize =
             size <- local i32
             width .= call charWidth [arg char]
             size .= load i32 tail 4 2
-            res .= call alloc [size `add` width]
-            store8 res (i32c $ fromEnum String) 0 0
-            store res (load i32 tail 8 2 `add` i32c 1) 8 2
+            res .= packString (size `add` width) (load i32 tail 8 2 `add` i32c 1)
             call storeChar [arg $ res `add` i32c 12, arg char]
             call memcpy [res `add` i32c 12 `add` width, tail `add` i32c 12, size `sub` i32c 12]
             ret res
@@ -284,17 +287,15 @@ mkWasm defs stackSize heapSize =
             width <- local i32
             next <- local i32
             len .= load i32 addr 8 2
-            res .= call alloc [load i32 addr 4 2]
-            store8 res (i32c $ fromEnum String) 0 0
+            res .= packString (load i32 addr 4 2) len
             store8 res (load i32 addr 1 2) 1 0
-            store res len 8 2
-            next .= (res `add` load i32 addr 4 2)
-            addr .= (addr `add` i32c 12)
+            next .= res `add` load i32 addr 4 2
+            addr .= addr `add` i32c 12
             while (len `ne` i32c 0) $ do
-                width .= (call strOffset [arg addr, arg $ i32c 1] `sub` addr)
-                next .= (next `sub` width)
+                width .= call strOffset [arg addr, arg $ i32c 1] `sub` addr
+                next .= next `sub` width
                 call memcpy [arg next, arg addr, arg width]
-                addr .= (addr `add` width)
+                addr .= addr `add` width
                 dec 1 len
             ret res
         defsStartFrom <- nextFuncIndex
@@ -489,7 +490,7 @@ genCase safe reg branches defaultBranch = do
     return $ \oldBases -> do
         let defCode = sequence_ $ map ($ oldBases) defBody
         let branchesCode = map (\(tag, code) -> (tag, code oldBases)) branchesBody
-        let conCheck = load8u i32 addr 0 0 `eq` i32c (fromEnum Con)
+        let conCheck = load8_u i32 addr 0 0 `eq` i32c (fromEnum Con)
         let conTag = load i32 addr 8 2
         let conGuard body
                 | safe = body
