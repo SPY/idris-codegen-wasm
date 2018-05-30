@@ -5,8 +5,8 @@
     <body>
         <script>
             let mem = null
-            let alloc = null
             let main = null
+            let wasm = null
         
             const ValType = {
                 Con: 0,
@@ -16,14 +16,27 @@
                 String: 4,
                 StrOffset: 5,
                 Bit32: 6,
-                Bit64: 7
+                Bit64: 7,
+                Fwd: 8
             }
         
             function loadValue(addr) {
                 const size = mem.getUint32(addr + 4, true)
                 switch (mem.getUint8(addr)) {
                     case ValType.Con:
-                        return { type: 'con', size, tag: mem.getUint32(addr + 8, true), addr }
+                        const arity = mem.getUint16(addr + 2, true)
+                        const values = []
+                        for (let i = 0; i < arity; i++) {
+                            values.push(loadValue(mem.getUint32(addr + 12 + (i * 4), true)))
+                        }
+                        return {
+                            type: 'con',
+                            size,
+                            tag: mem.getUint32(addr + 8, true),
+                            addr,
+                            values,
+                            arity
+                        }
                     case ValType.Int:
                         return { type: 'int', size, val: mem.getInt32(addr + 8, true), addr }
                     case ValType.Bit32:
@@ -53,6 +66,13 @@
                             val: readString(addr + 12, len),
                             addr
                         }
+                    case ValType.Fwd:
+                        return {
+                            type: 'forward',
+                            size,
+                            val: loadValue(mem.getUint32(addr + 8, true)),
+                            addr
+                        }
                     default:
                         throw new Error('Unknown value. Type tag: ' + mem.getUint8(addr))
                 }
@@ -66,9 +86,107 @@
             function aligned(size) {
                 return (size + 3) & 0xFFFFFFFC
             }
+
+            function copyPlain(addr, size) {
+                const newAddr = wasm.alloc(size)
+                let i
+                for (i = 0; i < size; i += 4) {
+                    mem.setUint32(newAddr + i, mem.getUint32(addr + i))
+                }
+                for (i -= 4; i < size; i++) {
+                    mem.setUint8(newAddr + i, mem.getUint8(addr + i))
+                }
+                return newAddr
+            }
+
+            function copy(addr) {
+                if (addr < wasm.stackStart) {
+                    // constant section
+                    return addr
+                }
+                let newAddr = null
+                switch (mem.getUint8(addr)) {
+                    case ValType.Con:
+                    case ValType.String:
+                        newAddr = copyPlain(addr, mem.getUint32(addr + 4, true))
+                        break
+                    case ValType.Int:
+                    case ValType.Bit32:
+                        newAddr = copyPlain(addr, 12)
+                        break
+                    case ValType.Bit64:
+                    case ValType.BigInt:
+                    case ValType.Float:
+                        newAddr = copyPlain(addr, 16)
+                        break
+                    case ValType.Fwd:
+                        // already moved
+                        return mem.getUint32(addr + 8, true)
+                    default:
+                        throw new Error('Unknown value. Type tag: ' + mem.getUint8(addr))
+                }
+                // mark value as moved to handle loops
+                mem.setUint8(addr, ValType.Fwd)
+                mem.setUint32(addr + 8, newAddr, true)
+                return newAddr
+            }
+
+            function copyNestedValues() {
+                let addr = wasm.getHeapStart()
+                while (addr < wasm.getHeapNext()) {
+                    switch (mem.getUint8(addr)) {
+                        case ValType.Con: {
+                            const arity = mem.getUint16(addr + 2, true)
+                            for (let i = 0; i < arity; i++) {
+                                const offset = addr + 12 + i * 4
+                                mem.setUint32(offset, copy(mem.getUint32(offset, true)), true)
+                            }
+                            break
+                        }
+                        default:
+                            break
+                    }
+                    addr += aligned(mem.getUint32(addr + 4, true))
+                }
+            }
         
             function gc(requestedSize) {
-                console.log('gc', requestedSize)
+                console.log('start GC. requested size', requestedSize)
+                printHeap()
+                printStack()
+
+                const {stackStart, stackEnd} = wasm
+                const stackTop = wasm.getStackTop()
+                const oldEnd = wasm.getHeapEnd()
+                const heapSize = wasm.getHeapEnd() - wasm.getHeapStart()
+                if (heapSize <= wasm.getHeapStart() - stackEnd) {
+                    // use old space
+                    wasm.setHeapStart(stackEnd)
+                    wasm.setHeapNext(stackEnd)
+                    wasm.setHeapEnd(stackEnd + heapSize)
+                }
+                else {
+                    // use space after current heap
+                    wasm.setHeapStart(oldEnd)
+                    wasm.setHeapNext(oldEnd)
+                    wasm.setHeapEnd(oldEnd + heapSize)
+                }
+
+                for (let i = stackStart; i < stackTop; i += 4) {
+                    const addr = mem.getUint32(i, true)
+                    mem.setUint32(i, copy(addr), true)
+                }
+
+                copyNestedValues()
+
+                const space = wasm.getHeapEnd() - wasm.getHeapNext()
+                if (space < Math.floor(heapSize / 2)) {
+                    wasm.setHeapEnd(wasm.getHeapEnd() + heapSize)
+                }
+
+                printHeap()
+                printStack()
+                console.log(`End GC. Old size: ${heapSize}. New size: ${wasm.getHeapEnd() - wasm.getHeapStart()}`)
             }
         
             function strWrite(strAddr) {
@@ -154,7 +272,7 @@
         
             function makeString(str) {
                 const size = 12 + getStringSizeInBytes(str)
-                const addr = alloc(size)
+                const addr = wasm.alloc(size)
                 mem.setUint8(addr, ValType.String)
                 mem.setUint8(addr + 1, !str ? 1 : 0)
                 mem.setUint32(addr + 8, str.length, true)
@@ -165,7 +283,7 @@
             }
         
             function makeInt(val) {
-                const addr = alloc(12)
+                const addr = wasm.alloc(12)
                 mem.setUint8(addr, ValType.Int)
                 mem.setInt32(addr + 8, val, true)
                 return addr
@@ -193,6 +311,29 @@
                 console.log('CONST SECTION', vals)
             }
 
+            function printHeap() {
+                const end = wasm.getHeapNext()
+                const vals = []
+                let i = wasm.getHeapStart()
+                while (i < end) {
+                    const val = loadValue(i)
+                    vals.push(val)
+                    i += aligned(val.size)
+                }
+                console.log('HEAP', vals)
+            }
+
+            function printStack() {
+                const end = wasm.getStackTop()
+                const vals = []
+                let i = wasm.stackStart
+                while (i < end) {
+                    vals.push(loadValue(mem.getUint32(i, true)))
+                    i += 4
+                }
+                console.log('STACK', vals)
+            }
+
             function printVal(addr) {
                 console.log('print value from idris', loadValue(addr))
             }
@@ -204,11 +345,12 @@
                     rts: { raiseError, gc, strWrite, intStr, printVal }
                 })
             }).then(results => {
-                const {alloc: a, mem: m, main: entry, stackStart} = results.instance.exports
+                const {mem: m} = results.instance.exports
+                wasm = results.instance.exports
                 mem = new DataView(m.buffer)
-                alloc = a
-                printConstSection(stackStart)
-                main = () => entry(stackStart)
+                printConstSection(wasm.stackStart)
+                // wasm.setHeapEnd(wasm.getHeapStart() + 100 * 1024)
+                main = () => wasm.main(wasm.stackStart)
                 main()
             })
         </script>

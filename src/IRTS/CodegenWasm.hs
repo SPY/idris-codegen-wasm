@@ -35,7 +35,7 @@ import Language.Wasm.Builder
 codegenWasm :: CodeGenerator
 codegenWasm ci = do
     let bc = map toBC $ simpleDecls ci
-    let wasmModule = mkWasm bc (1024 * 1024) (128 * 1024)
+    let wasmModule = mkWasm bc (1024 * 1024) ({-128 * -} 2 * 1024)
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
 mkWasm :: [(Name, [BC])] -> Int -> Int -> Module
@@ -49,12 +49,14 @@ mkWasm defs stackSize heapSize =
         export "mem" $ memory 20 Nothing
     
         stackStart <- export "stackStart" $ global Const i32 0
-        stackEnd <- global Const i32 0
+        stackEnd <- export "stackEnd" $ global Const i32 0
         stackBase <- global Mut i32 0
         stackTop <- global Mut i32 0
     
         retReg <- global Mut i32 0
         tmpReg <- global Mut i32 0
+
+        export "getStackTop" $ fun i32 $ ret stackTop
     
         heapStart <- global Mut i32 0
         heapNext <- global Mut i32 0
@@ -64,6 +66,10 @@ mkWasm defs stackSize heapSize =
         export "setHeapStart" $ fun () $ do
             val <- param i32
             heapStart .= val
+        export "getHeapNext" $ fun i32 $ ret heapNext
+        export "setHeapNext" $ fun () $ do
+            val <- param i32
+            heapNext .= val
         export "getHeapEnd" $ fun i32 $ ret heapEnd
         export "setHeapEnd" $ fun () $ do
             val <- param i32
@@ -82,7 +88,7 @@ mkWasm defs stackSize heapSize =
                 (do
                     addr .= heapNext
                     heapNext .= heapNext `add` alignedSize
-                    for (i .= addr) (i `lt_u` heapNext) (i .= i `add` i32c 4) $ do
+                    for (i .= addr) (i `lt_u` heapNext) (inc 4 i) $ do
                         store i (i32c 0) 0 2
                     store addr size 4 2
                     ret addr
@@ -98,9 +104,9 @@ mkWasm defs stackSize heapSize =
             end <- local i32
             dist .= stackBase
             end .= stackTop `add` (n `mul` i32c 4)
-            for (source .= stackTop) (source `lt_u` end) (source .= source `add` i32c 4) $ do
+            for (source .= stackTop) (source `lt_u` end) (inc 4 source) $ do
                 store source dist 0 2
-                dist .= dist `add` i32c 4
+                inc 4 dist
         reserve <- fun () $ do
             num <- param i32
             i <- local i32
@@ -108,7 +114,7 @@ mkWasm defs stackSize heapSize =
             newStackTop .= stackTop `add` (num `mul` i32c 4)
             if' () (stackEnd `lt_u` newStackTop)
                 (unreachable)
-                (for (i .= stackTop) (i `lt_u` newStackTop) (i .= i `add` i32c 4) $ do
+                (for (i .= stackTop) (i `lt_u` newStackTop) (inc 4 i) $ do
                     store i (i32c 0) 0 2
                 )
         memcpy <- fun () $ do
@@ -116,7 +122,7 @@ mkWasm defs stackSize heapSize =
             src <- param i32
             len <- param i32
             i <- local i32
-            for (i .= i32c 0) (i `lt_u` len) (i .= i `add` i32c 1) $ do
+            for (i .= i32c 0) (i `lt_u` len) (inc 1 i) $ do
                 store8 (dst `add` i) (load8_u i32 (src `add` i) 0 0) 0 0
         let packString :: (Producer size, OutType size ~ Proxy I32, Producer len, OutType len ~ Proxy I32)
                 => size
@@ -810,6 +816,11 @@ makeOp loc LWriteStr [_, reg] = do
     strWrite <- asks strWriteFn
     setRegVal loc $ call strWrite [str]
 
+makeOp loc (LChInt ITNative) args = getRegVal (last args) >>= setRegVal loc
+makeOp loc (LChInt ITChar) args = makeOp loc (LChInt ITNative) args
+makeOp loc (LIntCh ITNative) args = getRegVal (last args) >>= setRegVal loc
+makeOp loc (LIntCh ITChar) args = makeOp loc (LIntCh ITNative) args
+
 makeOp loc LCrash [reg] = do
     str <- getRegVal reg
     raiseError <- asks raiseErrorFn
@@ -949,6 +960,7 @@ data ValType
     | StrOffset
     | Bit32
     | Bit64
+    | Fwd
     deriving (Eq, Show, Enum)
 
 data ValHeader = VH {
