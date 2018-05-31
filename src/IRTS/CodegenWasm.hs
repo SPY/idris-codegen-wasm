@@ -35,7 +35,7 @@ import Language.Wasm.Builder
 codegenWasm :: CodeGenerator
 codegenWasm ci = do
     let bc = map toBC $ simpleDecls ci
-    let wasmModule = mkWasm bc (1024 * 1024) ({-128 * -} 2 * 1024)
+    let wasmModule = mkWasm bc (64 * 1024) (64 * 1024)
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
 mkWasm :: [(Name, [BC])] -> Int -> Int -> Module
@@ -97,6 +97,13 @@ mkWasm defs stackSize heapSize =
                     call gc [arg size]
                     call self [arg size]
                 )
+        memcpy <- fun () $ do
+            dst <- param i32
+            src <- param i32
+            len <- param i32
+            i <- local i32
+            for (i .= i32c 0) (i `lt_u` len) (inc 1 i) $ do
+                store8 (dst `add` i) (load8_u i32 (src `add` i) 0 0) 0 0
         slide <- fun () $ do
             n <- param i32
             source <- local i32
@@ -105,7 +112,7 @@ mkWasm defs stackSize heapSize =
             dist .= stackBase
             end .= stackTop `add` (n `mul` i32c 4)
             for (source .= stackTop) (source `lt_u` end) (inc 4 source) $ do
-                store source dist 0 2
+                store dist (load i32 source 0 2) 0 2
                 inc 4 dist
         reserve <- fun () $ do
             num <- param i32
@@ -117,13 +124,6 @@ mkWasm defs stackSize heapSize =
                 (for (i .= stackTop) (i `lt_u` newStackTop) (inc 4 i) $ do
                     store i (i32c 0) 0 2
                 )
-        memcpy <- fun () $ do
-            dst <- param i32
-            src <- param i32
-            len <- param i32
-            i <- local i32
-            for (i .= i32c 0) (i `lt_u` len) (inc 1 i) $ do
-                store8 (dst `add` i) (load8_u i32 (src `add` i) 0 0) 0 0
         let packString :: (Producer size, OutType size ~ Proxy I32, Producer len, OutType len ~ Proxy I32)
                 => size
                 -> len

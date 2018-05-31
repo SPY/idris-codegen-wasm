@@ -349,7 +349,6 @@
                 wasm = results.instance.exports
                 mem = new DataView(m.buffer)
                 printConstSection(wasm.stackStart)
-                // wasm.setHeapEnd(wasm.getHeapStart() + 100 * 1024)
                 main = () => wasm.main(wasm.stackStart)
                 main()
             })
