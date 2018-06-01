@@ -199,9 +199,11 @@ mkWasm defs stackSize heapSize =
             aSize <- local i32
             bSize <- local i32
             addr <- local i32
+            len <- local i32
             aSize .= load i32 a 4 2
             bSize .= load i32 b 4 2
-            addr .= packString (aSize `add` bSize `sub` i32c 12) (load i32 a 8 2 `add` load i32 b 8 2)
+            len .= load i32 a 8 2 `add` load i32 b 8 2
+            addr .= packString (aSize `add` bSize `sub` i32c 12) len
             call memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
             call memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
             ret addr
@@ -334,9 +336,11 @@ mkWasm defs stackSize heapSize =
             res <- local i32
             width <- local i32
             size <- local i32
+            len <- local i32
             width .= call charWidth [arg char]
             size .= load i32 tail 4 2
-            res .= packString (size `add` width) (load i32 tail 8 2 `add` i32c 1)
+            len .= load i32 tail 8 2 `add` i32c 1
+            res .= packString (size `add` width) len
             call storeChar [arg $ res `add` i32c 12, arg char]
             call memcpy [res `add` i32c 12 `add` width, tail `add` i32c 12, size `sub` i32c 12]
             ret res
