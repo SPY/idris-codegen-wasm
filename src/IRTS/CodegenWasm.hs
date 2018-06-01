@@ -35,13 +35,13 @@ import Language.Wasm.Builder
 codegenWasm :: CodeGenerator
 codegenWasm ci = do
     let bc = map toBC $ simpleDecls ci
-    let wasmModule = mkWasm bc (64 * 1024) (64 * 1024)
+    let wasmModule = mkWasm bc (64 * 1024) (4 * 1024)
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
 mkWasm :: [(Name, [BC])] -> Int -> Int -> Module
 mkWasm defs stackSize heapSize =
     genMod $ do
-        gc <- importFunction "rts" "gc" () [I32]
+        -- gc <- importFunction "rts" "gc" () [I32]
         raiseError <- importFunction "rts" "raiseError" () [I32]
         strWrite <- importFunction "rts" "strWrite" i32 [I32]
         intStr <- importFunction "rts" "intStr" i32 [I32]
@@ -74,7 +74,7 @@ mkWasm defs stackSize heapSize =
         export "setHeapEnd" $ fun () $ do
             val <- param i32
             heapEnd .= val
-        
+        gc <- declare () [I32]
         aligned <- fun i32 $ do
             size <- param i32
             (size `add` i32c 3) `and` i32c 0xFFFFFFFC
@@ -104,6 +104,60 @@ mkWasm defs stackSize heapSize =
             i <- local i32
             for (i .= i32c 0) (i `lt_u` len) (inc 1 i) $ do
                 store8 (dst `add` i) (load8_u i32 (src `add` i) 0 0) 0 0
+        copy <- fun i32 $ do
+            addr <- param i32
+            newAddr <- local i32
+            typeTag <- local i32
+            size <- local i32
+            when (addr `lt_u` stackStart) $ do
+                -- constant section
+                finish addr
+            typeTag .= load8_u i32 addr 0 0
+            let isTag tag = typeTag `eq` i32c (fromEnum tag)
+            when (isTag Fwd) $ finish $ load i32 addr 8 2
+            size .= load i32 addr 4 2
+            newAddr .= call alloc [arg size]
+            call memcpy [arg newAddr, arg addr, arg size]
+            store8 addr (i32c $ fromEnum Fwd) 0 0
+            store addr newAddr 8 2
+            ret newAddr
+        copyNestedValues <- fun () $ do
+            arity <- local i32
+            i <- local i32
+            j <- local i32
+            offset <- local i32
+            i .= heapStart
+            while (i `lt_u` heapNext) $ do
+                when (load8_u i32 i 0 0 `eq` i32c (fromEnum Con)) $ do
+                    arity .= load16_u i32 i 2 1
+                    for (j .= i32c 0) (j `lt_u` arity) (inc 1 j) $ do
+                        offset .= i `add` (j `mul` i32c 4)
+                        store offset (call copy [load i32 offset 12 2]) 12 2
+                i .= i `add` call aligned [load i32 i 4 2]
+        implement gc $ do
+            requestedSize <- param i32
+            heapSize <- local i32
+            i <- local i32
+            heapSize .= heapEnd `sub` heapStart
+            if' () (heapSize `le_u` (heapStart `sub` stackEnd))
+                (do
+                    heapStart .= stackEnd
+                    heapNext .= stackEnd
+                    heapEnd .= stackEnd `add` heapSize
+                )
+                (do
+                    heapStart .= heapEnd
+                    heapNext .= heapEnd
+                    heapEnd .= heapEnd `add` heapSize
+                )
+            for (i .= stackStart) (i `lt_u` stackTop) (inc 4 i) $ do
+                store i (call copy [load i32 i 0 2]) 0 2
+            retReg .= call copy [arg retReg]
+            tmpReg .= call copy [arg tmpReg]
+            call copyNestedValues []
+            when (((heapEnd `sub` heapNext) `sub` requestedSize) `lt_u` (heapSize `div_u` i32c 2)) $ do
+                -- if less than half heap left after GC double heap size
+                heapEnd .= heapEnd `add` heapSize
         slide <- fun () $ do
             n <- param i32
             source <- local i32
@@ -304,7 +358,7 @@ mkWasm defs stackSize heapSize =
                 addr .= addr `add` width
                 dec 1 len
             ret res
-        defsStartFrom <- nextFuncIndex
+        symbols <- Map.fromList <$> mapM (\(name, _) -> declare () [I32] >>= (\fn -> return (name, fn))) defs
         let bindings = GB {
                 stackStartIdx = stackStart,
                 stackEndIdx = stackEnd,
@@ -327,12 +381,12 @@ mkWasm defs stackSize heapSize =
                 intStrFn = intStr,
                 readCharFn = readChar,
                 printValFn = printVal,
-                symbols = Map.fromList $ zipWith (\name idx -> (name, Fn idx)) (map fst defs) [defsStartFrom..]
+                symbols
             }
-        let (funcs, st) = runWasmGen emptyState bindings $ mapM (mkFunc . snd) defs
+        let (funcs, st) = runWasmGen emptyState bindings $ mapM mkFunc defs
         let GS { constSectionEnd, constSection } = st
         sequence_ funcs
-        case Map.lookup (MN 0 "runMain") $ symbols bindings of
+        case Map.lookup (MN 0 "runMain") symbols of
             Just idx -> export "main" idx >> return ()
             Nothing -> return ()
         setGlobalInitializer stackStart $ fromIntegral constSectionEnd
@@ -387,10 +441,11 @@ type WasmGen = StateT GenState (Reader GlobalBindings)
 runWasmGen :: GenState -> GlobalBindings -> WasmGen a -> (a, GenState)
 runWasmGen st bindings = flip runReader bindings . flip runStateT st
 
-mkFunc :: [BC] -> WasmGen (GenMod (Fn ()))
-mkFunc byteCode = do
+mkFunc :: (Name, [BC]) -> WasmGen (GenMod (Fn ()))
+mkFunc (name, byteCode) = do
     body <- mapM bcToInstr byteCode
-    return $ fun () $ do
+    Just fn <- Map.lookup name <$> asks symbols
+    return $ implement fn $ do
         oldBase <- param i32
         myOldBase <- local i32
         sequence_ $ map ($ (oldBase, myOldBase)) body

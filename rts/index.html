@@ -59,6 +59,9 @@
                         return { type: 'float', size, val: mem.getFloat64(addr + 8, true), addr }
                     case ValType.String:
                         const len = mem.getUint32(addr + 8, true)
+                        if (len > size) {
+                            throw new Error('Invalid length for string. Size: ' + size + ', length: ' + len)
+                        }
                         return {
                             type: 'string',
                             size,
@@ -143,8 +146,6 @@
                             }
                             break
                         }
-                        default:
-                            break
                     }
                     addr += aligned(mem.getUint32(addr + 4, true))
                 }
@@ -179,7 +180,7 @@
 
                 copyNestedValues()
 
-                const space = wasm.getHeapEnd() - wasm.getHeapNext()
+                const space = wasm.getHeapEnd() - wasm.getHeapNext() - requestedSize
                 if (space < Math.floor(heapSize / 2)) {
                     wasm.setHeapEnd(wasm.getHeapEnd() + heapSize)
                 }
