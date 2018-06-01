@@ -44,7 +44,6 @@ mkWasm defs stackSize heapSize =
         -- gc <- importFunction "rts" "gc" () [I32]
         raiseError <- importFunction "rts" "raiseError" () [I32]
         strWrite <- importFunction "rts" "strWrite" i32 [I32]
-        intStr <- importFunction "rts" "intStr" i32 [I32]
         printVal <- importFunction "rts" "printVal" () [I32]
         export "mem" $ memory 20 Nothing
     
@@ -361,6 +360,29 @@ mkWasm defs stackSize heapSize =
                 call memcpy [arg next, arg addr, arg width]
                 addr .= addr `add` width
                 dec 1 len
+            ret res
+        intStr <- fun i32 $ do
+            intAddr <- param i32
+            val <- local i32
+            len <- local i32
+            res <- local i32
+            i <- local i32
+            val .= load i32 intAddr 8 2
+            let zeroCode = i32c 48
+            let minusCode = i32c 45
+            when (eqz val) $ do
+                res .= packString (i32c 13) (i32c 1)
+                store8 res zeroCode 12 0
+                finish res
+            len .= if' i32 (val `lt_s` i32c 0) (i32c 1) (i32c 0)
+            for (i .= val) (i `ne` i32c 0) (i .= i `div_s` i32c 10) $ inc 1 len
+            res .= packString (i32c 12 `add` len) len
+            when (val `lt_s` i32c 0) $ do
+                store8 res minusCode 12 0
+                val .= val `mul` i32c (-1)
+            for (i .= res `add` len) (val `ne` i32c 0) (dec 1 i) $ do
+                store8 i (zeroCode `add` (val `rem_s` i32c 10)) 11 0
+                val .= val `div_s` i32c 10
             ret res
         symbols <- Map.fromList <$> mapM (\(name, _) -> declare () [I32] >>= (\fn -> return (name, fn))) defs
         let bindings = GB {

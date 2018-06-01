@@ -290,13 +290,6 @@
                 return addr
             }
         
-            function intStr(intAddr) {
-                const val = mem.getUint32(intAddr + 8, true) | 0
-                const res = makeString(val.toString())
-                console.log('int to str', loadValue(intAddr), loadValue(res))
-                return res
-            }
-        
             function raiseError(strAddr) {
                 throw new Error('Idris Error: ' + loadString(strAddr))
             }
@@ -343,7 +336,7 @@
                 response.arrayBuffer()
             ).then(bytes => {
                 return WebAssembly.instantiate(bytes, {
-                    rts: { raiseError, gc, strWrite, intStr, printVal }
+                    rts: { raiseError, gc, strWrite, printVal }
                 })
             }).then(results => {
                 const {mem: m} = results.instance.exports
