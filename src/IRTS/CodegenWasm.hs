@@ -35,7 +35,7 @@ import Language.Wasm.Builder
 codegenWasm :: CodeGenerator
 codegenWasm ci = do
     let bc = map toBC $ simpleDecls ci
-    let wasmModule = mkWasm bc (64 * 1024) (4 * 1024)
+    let wasmModule = mkWasm bc (64 * 1024) (256 * 1024)
     LBS.writeFile (outputFile ci) $ WasmBinary.dumpModuleLazy wasmModule
 
 mkWasm :: [(Name, [BC])] -> Int -> Int -> Module
