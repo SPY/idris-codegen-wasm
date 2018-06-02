@@ -195,6 +195,10 @@
                 console.log(loadString(strAddr))
                 return makeInt(0)
             }
+
+            function strRead() {
+                return makeString(prompt('Idris requires input:'))
+            }
         
             function getCharWidth(code) {
                 if (code < 0x80) {
@@ -355,6 +359,7 @@
                         raiseError,
                         gc,
                         strWrite,
+                        strRead,
                         strDouble,
                         doubleStr,
                         printVal,

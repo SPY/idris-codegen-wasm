@@ -44,6 +44,7 @@ mkWasm defs stackSize heapSize =
         -- gc <- importFunction "rts" "gc" () [I32]
         raiseError <- importFunction "rts" "raiseError" () [I32]
         strWrite <- importFunction "rts" "strWrite" i32 [I32]
+        strRead <- importFunction "rts" "strRead" i32 []
         printVal <- importFunction "rts" "printVal" () [I32]
         strDouble <- importFunction "rts" "strDouble" i32 [I32]
         doubleStr <- importFunction "rts" "doubleStr" i32 [I32]
@@ -433,6 +434,7 @@ mkWasm defs stackSize heapSize =
                 strSubstrFn = strSubstr,
                 strRevFn = strRev,
                 strWriteFn = strWrite,
+                strReadFn = strRead,
                 strIntFn = strInt,
                 intStrFn = intStr,
                 strDoubleFn = strDouble,
@@ -498,6 +500,7 @@ data GlobalBindings = GB {
     strSubstrFn :: Fn (Proxy I32),
     strRevFn :: Fn (Proxy I32),
     strWriteFn :: Fn (Proxy I32),
+    strReadFn :: Fn (Proxy I32),
     strIntFn :: Fn (Proxy I32),
     strDoubleFn :: Fn (Proxy I32),
     doubleStrFn :: Fn (Proxy I32),
@@ -714,6 +717,7 @@ genReserve n = do
             (forM_ [0..n-1] $ \i -> store stackTop (i32c 0) (i * 4) 2)
 
 {-
+Left to implement:
 data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
     | LUDiv IntTy | LSDiv ArithTy | LURem IntTy | LSRem ArithTy
     | LAnd IntTy | LOr IntTy | LXOr IntTy | LCompl IntTy
@@ -721,16 +725,8 @@ data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
     | LEq ArithTy | LLt IntTy | LLe IntTy | LGt IntTy | LGe IntTy
     | LSLt ArithTy | LSLe ArithTy | LSGt ArithTy | LSGe ArithTy
     | LSExt IntTy IntTy | LZExt IntTy IntTy | LTrunc IntTy IntTy
-    | LStrConcat | LStrLt | LStrEq | LStrLen
     | LIntFloat IntTy | LFloatInt IntTy | LIntStr IntTy | LStrInt IntTy
-    | LFloatStr | LStrFloat | LChInt IntTy | LIntCh IntTy
     | LBitCast ArithTy ArithTy -- Only for values of equal width
-
-    | LFExp | LFLog | LFSin | LFCos | LFTan | LFASin | LFACos | LFATan
-    | LFATan2 | LFSqrt | LFFloor | LFCeil | LFNegate
-
-    | LStrHead | LStrTail | LStrCons | LStrIndex | LStrRev | LStrSubstr
-    | LReadStr | LWriteStr
 
     -- system info
     | LSystemInfo
@@ -739,9 +735,6 @@ data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
     | LPar -- evaluate argument anywhere, possibly on another
             -- core or another machine. 'id' is a valid implementation
     | LExternal Name
-    | LCrash
-
-    | LNoOp
 -}
 -- data NativeTy = IT8 | IT16 | IT32 | IT64
 -- data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
@@ -1010,6 +1003,9 @@ makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
     setRegVal loc $ call strWrite [str]
+makeOp loc LReadStr [_] = do
+    strRead <- asks strReadFn
+    setRegVal loc $ call strRead []
 
 makeOp loc LCrash [reg] = do
     str <- getRegVal reg
