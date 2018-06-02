@@ -384,6 +384,24 @@ mkWasm defs stackSize heapSize =
                 store8 i (zeroCode `add` (val `rem_s` i32c 10)) 11 0
                 val .= val `div_s` i32c 10
             ret res
+        strInt <- fun i32 $ do
+            strAddr <- param i32
+            len <- local i32
+            char <- local i32
+            next <- local i32
+            val <- local i32
+            len .= load i32 strAddr 8 2
+            when (len `le_s` i32c 0) $ finish $ packInt (i32c 0)
+            let (zero, nine, plus, minus) = (i32c 48, i32c 57, i32c 43, i32c 45)
+            char .= load8_u i32 strAddr 12 0
+            let isSign ch = (ch `eq` minus) `or` (ch `eq` plus)
+            val .= i32c 0
+            for (next .= if' i32 (isSign char) (i32c 1) (i32c 0)) (next `lt_u` len) (inc 1 next) $ do
+                char .= load8_u i32 (strAddr `add` next) 12 0
+                when ((char `lt_u` zero) `or` (char `gt_u` nine)) $ finish $ packInt $ i32c 0
+                val .= (val `mul` i32c 10) `add` (char `sub` zero)
+            let sign = if' i32 (load8_u i32 strAddr 12 0 `eq` minus) (i32c (-1)) (i32c 1)
+            packInt (sign `mul` val)
         symbols <- Map.fromList <$> mapM (\(name, _) -> declare () [I32] >>= (\fn -> return (name, fn))) defs
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -404,6 +422,7 @@ mkWasm defs stackSize heapSize =
                 strSubstrFn = strSubstr,
                 strRevFn = strRev,
                 strWriteFn = strWrite,
+                strIntFn = strInt,
                 intStrFn = intStr,
                 readCharFn = readChar,
                 printValFn = printVal,
@@ -457,6 +476,7 @@ data GlobalBindings = GB {
     strSubstrFn :: Fn (Proxy I32),
     strRevFn :: Fn (Proxy I32),
     strWriteFn :: Fn (Proxy I32),
+    strIntFn :: Fn (Proxy I32),
     readCharFn :: Fn (Proxy I32),
     intStrFn :: Fn (Proxy I32),
     printValFn :: Fn ()
@@ -814,6 +834,10 @@ makeOp loc (LIntStr ITNative) [reg] = do
     val <- getRegVal reg
     intStr <- asks intStrFn
     setRegVal loc $ call intStr [val]
+makeOp loc (LStrInt ITNative) [reg] = do
+    val <- getRegVal reg
+    strInt <- asks strIntFn
+    setRegVal loc $ call strInt [val]
 
 makeOp loc (LPlus (ATInt ITChar)) [l, r] = makeOp loc (LPlus (ATInt ITNative)) [l, r]
 makeOp loc (LMinus (ATInt ITChar)) [l, r] = makeOp loc (LMinus (ATInt ITNative)) [l, r]
