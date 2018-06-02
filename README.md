@@ -7,13 +7,14 @@
   * [x] Garbadge Collection
   * [x] String representation and implementation of primitive operations in RTS(with UTF8 support)
   * [x] Char and native int operations
+  * [x] Double operations
 
 ## Todo
-  * [ ] Double operations
   * [ ] BigNum primitives(now emulated as WASM i64 number)
   * [ ] Bit8/16/32/64 operations
+  * [ ] Effective unboxed representation for int and char
   * [ ] Effective substrings representation as StrOffset
-  * [ ] Convertions (str to double, int to str, int to big num, etc)
+  * [ ] Convertions (int to big num, bits to int, etc)
   * [ ] Pass Idris language test suite
   * [ ] FFI and Idris-level support for new back-end
 

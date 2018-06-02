@@ -191,7 +191,7 @@
             }
         
             function strWrite(strAddr) {
-                console.log('str write', loadValue(strAddr))
+                // console.log('str write', loadValue(strAddr))
                 console.log(loadString(strAddr))
                 return makeInt(0)
             }
@@ -289,6 +289,21 @@
                 mem.setInt32(addr + 8, val, true)
                 return addr
             }
+
+            function makeDouble(val) {
+                const addr = wasm.alloc(16)
+                mem.setUint8(addr, ValType.Float)
+                mem.setFloat64(addr + 8, val, true)
+                return addr
+            }
+
+            function strDouble(strAddr) {
+                return makeDouble(parseFloat(loadString(strAddr)))
+            }
+
+            function doubleStr(doubleAddr) {
+                return makeString(mem.getFloat64(doubleAddr + 8, true).toString())
+            }
         
             function raiseError(strAddr) {
                 throw new Error('Idris Error: ' + loadString(strAddr))
@@ -336,7 +351,23 @@
                 response.arrayBuffer()
             ).then(bytes => {
                 return WebAssembly.instantiate(bytes, {
-                    rts: { raiseError, gc, strWrite, printVal }
+                    rts: {
+                        raiseError,
+                        gc,
+                        strWrite,
+                        strDouble,
+                        doubleStr,
+                        printVal,
+                        exp: Math.exp,
+                        log: Math.log,
+                        sin: Math.sin,
+                        cos: Math.cos,
+                        tan: Math.tan,
+                        asin: Math.asin,
+                        acos: Math.acos,
+                        atan: Math.atan,
+                        atan2: Math.atan2
+                    }
                 })
             }).then(results => {
                 const {mem: m} = results.instance.exports

@@ -45,6 +45,17 @@ mkWasm defs stackSize heapSize =
         raiseError <- importFunction "rts" "raiseError" () [I32]
         strWrite <- importFunction "rts" "strWrite" i32 [I32]
         printVal <- importFunction "rts" "printVal" () [I32]
+        strDouble <- importFunction "rts" "strDouble" i32 [I32]
+        doubleStr <- importFunction "rts" "doubleStr" i32 [I32]
+        expFn <- importFunction "rts" "exp" f64 [F64]
+        logFn <- importFunction "rts" "log" f64 [F64]
+        sinFn <- importFunction "rts" "sin" f64 [F64]
+        cosFn <- importFunction "rts" "cos" f64 [F64]
+        tanFn <- importFunction "rts" "tan" f64 [F64]
+        asinFn <- importFunction "rts" "asin" f64 [F64]
+        acosFn <- importFunction "rts" "acos" f64 [F64]
+        atanFn <- importFunction "rts" "atan" f64 [F64]
+        atan2Fn <- importFunction "rts" "atan2" f64 [F64]
         export "mem" $ memory 20 Nothing
     
         stackStart <- export "stackStart" $ global Const i32 0
@@ -424,8 +435,19 @@ mkWasm defs stackSize heapSize =
                 strWriteFn = strWrite,
                 strIntFn = strInt,
                 intStrFn = intStr,
+                strDoubleFn = strDouble,
+                doubleStrFn = doubleStr,
                 readCharFn = readChar,
                 printValFn = printVal,
+                expFn,
+                logFn,
+                sinFn,
+                cosFn,
+                tanFn,
+                asinFn,
+                acosFn,
+                atanFn,
+                atan2Fn,
                 symbols
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM mkFunc defs
@@ -477,8 +499,19 @@ data GlobalBindings = GB {
     strRevFn :: Fn (Proxy I32),
     strWriteFn :: Fn (Proxy I32),
     strIntFn :: Fn (Proxy I32),
+    strDoubleFn :: Fn (Proxy I32),
+    doubleStrFn :: Fn (Proxy I32),
     readCharFn :: Fn (Proxy I32),
     intStrFn :: Fn (Proxy I32),
+    expFn :: Fn (Proxy F64),
+    logFn :: Fn (Proxy F64),
+    sinFn :: Fn (Proxy F64),
+    cosFn :: Fn (Proxy F64),
+    tanFn :: Fn (Proxy F64),
+    asinFn :: Fn (Proxy F64),
+    acosFn :: Fn (Proxy F64),
+    atanFn :: Fn (Proxy F64),
+    atan2Fn :: Fn (Proxy F64),
     printValFn :: Fn ()
 }
 
@@ -818,6 +851,14 @@ makeOp loc (LGt ITNative) args =
 makeOp loc (LGe ITNative) args =
     i32BinOp loc ge_u args
 
+makeOp loc (LIntFloat ITNative) [reg] = do
+    val <- getRegVal reg
+    ctor <- genFloat
+    setRegVal loc $ ctor $ convert_s f64 $ load i32 val 8 2
+makeOp loc (LFloatInt ITNative) [reg] = do
+    val <- getRegVal reg
+    ctor <- genInt
+    setRegVal loc $ ctor $ trunc_s i32 $ load f64 val 8 2
 makeOp loc (LSExt ITNative ITBig) [reg] = do
     val <- getRegVal reg
     ctor <- genBigInt
@@ -838,6 +879,18 @@ makeOp loc (LStrInt ITNative) [reg] = do
     val <- getRegVal reg
     strInt <- asks strIntFn
     setRegVal loc $ call strInt [val]
+makeOp loc LFloatStr [reg] = do
+    val <- getRegVal reg
+    doubleStr <- asks doubleStrFn
+    setRegVal loc $ call doubleStr [val]
+makeOp loc LStrFloat [reg] = do
+    val <- getRegVal reg
+    strDouble <- asks strDoubleFn
+    setRegVal loc $ call strDouble [val]
+makeOp loc (LChInt ITNative) args = getRegVal (last args) >>= setRegVal loc
+makeOp loc (LChInt ITChar) args = makeOp loc (LChInt ITNative) args
+makeOp loc (LIntCh ITNative) args = getRegVal (last args) >>= setRegVal loc
+makeOp loc (LIntCh ITChar) args = makeOp loc (LIntCh ITNative) args
 
 makeOp loc (LPlus (ATInt ITChar)) [l, r] = makeOp loc (LPlus (ATInt ITNative)) [l, r]
 makeOp loc (LMinus (ATInt ITChar)) [l, r] = makeOp loc (LMinus (ATInt ITNative)) [l, r]
@@ -866,6 +919,43 @@ makeOp loc (LGe ITChar) [l, r] = makeOp loc (LGe ITNative) [l, r]
 makeOp loc (LPlus ATFloat) args = f64BinOp loc add args
 makeOp loc (LMinus ATFloat) args = f64BinOp loc sub args
 makeOp loc (LTimes ATFloat) args = f64BinOp loc mul args
+makeOp loc (LSDiv ATFloat) args = f64BinOp loc div_f args
+makeOp loc (LEq ATFloat) args = f64RelOp loc eq args
+makeOp loc (LSLt ATFloat) args = f64RelOp loc lt_f args
+makeOp loc (LSLe ATFloat) args = f64RelOp loc le_f args
+makeOp loc (LSGt ATFloat) args = f64RelOp loc gt_f args
+makeOp loc (LSGe ATFloat) args = f64RelOp loc ge_f args
+makeOp loc LFExp args = do
+    op <- asks expFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFLog args = do
+    op <- asks logFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFSin args = do
+    op <- asks sinFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFCos args = do
+    op <- asks cosFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFTan args = do
+    op <- asks tanFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFASin args = do
+    op <- asks asinFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFACos args = do
+    op <- asks acosFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFATan args = do
+    op <- asks atanFn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFATan2 args = do
+    op <- asks atan2Fn
+    f64UnOp loc (\x -> call op [x]) args
+makeOp loc LFSqrt args = f64UnOp loc sqrt_f args
+makeOp loc LFFloor args = f64UnOp loc floor_f args
+makeOp loc LFCeil args = f64UnOp loc ceil_f args
+makeOp loc LFNegate args = f64UnOp loc (\x -> x `mul` f64c (-1)) args
 
 makeOp loc LStrConcat [l, r] = do
     a <- getRegVal l
@@ -920,11 +1010,6 @@ makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
     setRegVal loc $ call strWrite [str]
-
-makeOp loc (LChInt ITNative) args = getRegVal (last args) >>= setRegVal loc
-makeOp loc (LChInt ITChar) args = makeOp loc (LChInt ITNative) args
-makeOp loc (LIntCh ITNative) args = getRegVal (last args) >>= setRegVal loc
-makeOp loc (LIntCh ITChar) args = makeOp loc (LIntCh ITNative) args
 
 makeOp loc LCrash [reg] = do
     str <- getRegVal reg
@@ -987,6 +1072,25 @@ f64BinOp loc op [l, r] = do
     left <- getRegVal l
     right <- getRegVal r
     ctor <- genFloat
+    setRegVal loc $ ctor $ op (load f64 left 8 2) (load f64 right 8 2)
+
+f64UnOp :: Reg
+    -> (GenFun (Proxy F64) -> GenFun (Proxy F64))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+f64UnOp loc op [x] = do
+    val <- getRegVal x
+    ctor <- genFloat
+    setRegVal loc $ ctor $ op (load f64 val 8 2)
+
+f64RelOp :: Reg
+    -> (GenFun (Proxy F64) -> GenFun (Proxy F64) -> GenFun (Proxy I32))
+    -> [Reg]
+    -> WasmGen (GenFun ())
+f64RelOp loc op [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
     setRegVal loc $ ctor $ op (load f64 left 8 2) (load f64 right 8 2)
 
 asAddr :: WasmGen Word32 -> WasmGen (GenFun (Proxy I32))
