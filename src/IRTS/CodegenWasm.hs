@@ -746,10 +746,48 @@ makeOp loc (LMinus (ATInt (ITFixed IT8))) args =
     i32BinOp loc (\l r -> and (i32c 0xFF) $ sub l r) args
 makeOp loc (LTimes (ATInt (ITFixed IT8))) args =
     i32BinOp loc (\l r -> and (i32c 0xFF) $ mul l r) args
+makeOp loc (LUDiv (ITFixed IT8)) args =
+    i32BinOp loc div_u args
+makeOp loc (LSDiv (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (onInt8 $ \a b -> (a `div_s` b) `and` i32c 0xFF) args
+makeOp loc (LURem (ITFixed IT8)) args =
+    i32BinOp loc rem_u args
+makeOp loc (LSRem (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (onInt8 $ \a b -> (a `rem_s` b) `and` i32c 0xFF) args
+makeOp loc (LAnd (ITFixed IT8)) args =
+    i32BinOp loc and args
+makeOp loc (LOr (ITFixed IT8)) args =
+    i32BinOp loc or args
+makeOp loc (LXOr (ITFixed IT8)) args =
+    i32BinOp loc xor args
+makeOp loc (LSHL (ITFixed IT8)) args =
+    i32BinOp loc (\l r -> and (i32c 0xFF) $ shl l r) args
+makeOp loc (LLSHR (ITFixed IT8)) args =
+    i32BinOp loc (\l r -> and (i32c 0xFF) $ shr_u l r) args
+makeOp loc (LASHR (ITFixed IT8)) args =
+    i32BinOp loc (\l r -> and (i32c 0xFF) $ shr_s l r) args
+makeOp loc (LCompl (ITFixed IT8)) [x] = do
+    val <- getRegVal x
+    ctor <- genInt
+    setRegVal loc $ ctor $ load i32 val 8 2 `xor` i32c 0xFF
 makeOp loc (LEq (ATInt (ITFixed IT8))) args =
     i32BinOp loc eq args -- do not need clipping for relation ops, coz result 0 or 1
 makeOp loc (LSLt (ATInt (ITFixed IT8))) args =
-    i32BinOp loc lt_s args -- do not need clipping for relation ops, coz result 0 or 1
+    i32BinOp loc (onInt8 lt_s) args
+makeOp loc (LSLe (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (onInt8 le_s) args
+makeOp loc (LSGt (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (onInt8 gt_s) args
+makeOp loc (LSGe (ATInt (ITFixed IT8))) args =
+    i32BinOp loc (onInt8 ge_s) args
+makeOp loc (LLt (ITFixed IT8)) args =
+    i32BinOp loc lt_u args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LLe (ITFixed IT8)) args =
+    i32BinOp loc le_u args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LGt (ITFixed IT8)) args =
+    i32BinOp loc gt_u args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LGe (ITFixed IT8)) args =
+    i32BinOp loc ge_u args -- do not need clipping for relation ops, coz result 0 or 1
 
 makeOp loc (LPlus (ATInt (ITFixed IT16))) args =
     i32BinOp loc (\l r -> and (i32c 0xFFFF) $ add l r) args
@@ -757,10 +795,48 @@ makeOp loc (LMinus (ATInt (ITFixed IT16))) args =
     i32BinOp loc (\l r -> and (i32c 0xFFFF) $ sub l r) args
 makeOp loc (LTimes (ATInt (ITFixed IT16))) args =
     i32BinOp loc (\l r -> and (i32c 0xFFFF) $ mul l r) args
+makeOp loc (LUDiv (ITFixed IT16)) args =
+    i32BinOp loc div_u args
+makeOp loc (LSDiv (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (onInt16 $ \a b -> (a `div_s` b) `and` i32c 0xFFFF) args
+makeOp loc (LURem (ITFixed IT16)) args =
+    i32BinOp loc rem_u args
+makeOp loc (LSRem (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (onInt16 $ \a b -> (a `rem_s` b) `and` i32c 0xFFFF) args
+makeOp loc (LAnd (ITFixed IT16)) args =
+    i32BinOp loc and args
+makeOp loc (LOr (ITFixed IT16)) args =
+    i32BinOp loc or args
+makeOp loc (LXOr (ITFixed IT16)) args =
+    i32BinOp loc xor args
+makeOp loc (LSHL (ITFixed IT16)) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ shl l r) args
+makeOp loc (LLSHR (ITFixed IT16)) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ shr_u l r) args
+makeOp loc (LASHR (ITFixed IT16)) args =
+    i32BinOp loc (\l r -> and (i32c 0xFFFF) $ shr_s l r) args
+makeOp loc (LCompl (ITFixed IT16)) [x] = do
+    val <- getRegVal x
+    ctor <- genInt
+    setRegVal loc $ ctor $ load i32 val 8 2 `xor` i32c 0xFFFF
 makeOp loc (LEq (ATInt (ITFixed IT16))) args =
     i32BinOp loc eq args -- do not need clipping for relation ops, coz result 0 or 1
 makeOp loc (LSLt (ATInt (ITFixed IT16))) args =
-    i32BinOp loc lt_s args -- do not need clipping for relation ops, coz result 0 or 1
+    i32BinOp loc (onInt16 lt_s) args
+makeOp loc (LSLe (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (onInt16 le_s) args
+makeOp loc (LSGt (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (onInt16 gt_s) args
+makeOp loc (LSGe (ATInt (ITFixed IT16))) args =
+    i32BinOp loc (onInt16 ge_s) args
+makeOp loc (LLt (ITFixed IT16)) args =
+    i32BinOp loc lt_u args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LLe (ITFixed IT16)) args =
+    i32BinOp loc le_u args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LGt (ITFixed IT16)) args =
+    i32BinOp loc gt_u args -- do not need clipping for relation ops, coz result 0 or 1
+makeOp loc (LGe (ITFixed IT16)) args =
+    i32BinOp loc ge_u args -- do not need clipping for relation ops, coz result 0 or 1
 
 makeOp loc (LPlus (ATInt (ITFixed IT32))) args =
     i32BitBinOp loc add args
@@ -768,10 +844,48 @@ makeOp loc (LMinus (ATInt (ITFixed IT32))) args =
     i32BitBinOp loc sub args
 makeOp loc (LTimes (ATInt (ITFixed IT32))) args =
     i32BitBinOp loc mul args
+makeOp loc (LUDiv (ITFixed IT32)) args =
+    i32BitBinOp loc div_u args
+makeOp loc (LSDiv (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc div_s args
+makeOp loc (LURem (ITFixed IT32)) args =
+    i32BitBinOp loc rem_u args
+makeOp loc (LSRem (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc rem_s args
+makeOp loc (LAnd (ITFixed IT32)) args =
+    i32BitBinOp loc and args
+makeOp loc (LOr (ITFixed IT32)) args =
+    i32BitBinOp loc or args
+makeOp loc (LXOr (ITFixed IT32)) args =
+    i32BitBinOp loc xor args
+makeOp loc (LSHL (ITFixed IT32)) args =
+    i32BitBinOp loc shl args
+makeOp loc (LLSHR (ITFixed IT32)) args =
+    i32BitBinOp loc shr_u args
+makeOp loc (LASHR (ITFixed IT32)) args =
+    i32BitBinOp loc shr_s args
+makeOp loc (LCompl (ITFixed IT32)) [x] = do
+    val <- getRegVal x
+    ctor <- genBit32
+    setRegVal loc $ ctor $ load i32 val 8 2 `xor` i32c (-1)
 makeOp loc (LEq (ATInt (ITFixed IT32))) args =
     i32BitBinOp loc eq args
 makeOp loc (LSLt (ATInt (ITFixed IT32))) args =
     i32BitBinOp loc lt_s args
+makeOp loc (LSLe (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc le_s args
+makeOp loc (LSGt (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc gt_s args
+makeOp loc (LSGe (ATInt (ITFixed IT32))) args =
+    i32BitBinOp loc ge_s args
+makeOp loc (LLt (ITFixed IT32)) args =
+    i32BitBinOp loc lt_u args
+makeOp loc (LLe (ITFixed IT32)) args =
+    i32BitBinOp loc le_u args
+makeOp loc (LGt (ITFixed IT32)) args =
+    i32BitBinOp loc gt_u args
+makeOp loc (LGe (ITFixed IT32)) args =
+    i32BitBinOp loc ge_u args
 
 makeOp loc (LPlus (ATInt (ITFixed IT64))) args =
     i64BinOp loc add args
@@ -779,10 +893,48 @@ makeOp loc (LMinus (ATInt (ITFixed IT64))) args =
     i64BinOp loc sub args
 makeOp loc (LTimes (ATInt (ITFixed IT64))) args =
     i64BinOp loc mul args
+makeOp loc (LUDiv (ITFixed IT64)) args =
+    i64BinOp loc div_u args
+makeOp loc (LSDiv (ATInt (ITFixed IT64))) args =
+    i64BinOp loc div_s args
+makeOp loc (LURem (ITFixed IT64)) args =
+    i64BinOp loc rem_u args
+makeOp loc (LSRem (ATInt (ITFixed IT64))) args =
+    i64BinOp loc rem_s args
+makeOp loc (LAnd (ITFixed IT64)) args =
+    i64BinOp loc and args
+makeOp loc (LOr (ITFixed IT64)) args =
+    i64BinOp loc or args
+makeOp loc (LXOr (ITFixed IT64)) args =
+    i64BinOp loc xor args
+makeOp loc (LSHL (ITFixed IT64)) args =
+    i64BinOp loc shl args
+makeOp loc (LLSHR (ITFixed IT64)) args =
+    i64BinOp loc shr_u args
+makeOp loc (LASHR (ITFixed IT64)) args =
+    i64BinOp loc shr_s args
+makeOp loc (LCompl (ITFixed IT64)) [x] = do
+    val <- getRegVal x
+    ctor <- genBit64
+    setRegVal loc $ ctor $ load i64 val 8 2 `xor` i64c (-1)
 makeOp loc (LEq (ATInt (ITFixed IT64))) args =
     i64BinOp loc ((extend_u .) . eq) args
 makeOp loc (LSLt (ATInt (ITFixed IT64))) args =
     i64BinOp loc ((extend_u .) . lt_s) args
+makeOp loc (LSLe (ATInt (ITFixed IT64))) args =
+    i64BinOp loc ((extend_u .) . le_s) args
+makeOp loc (LSGt (ATInt (ITFixed IT64))) args =
+    i64BinOp loc ((extend_u .) . gt_s) args
+makeOp loc (LSGe (ATInt (ITFixed IT64))) args =
+    i64BinOp loc ((extend_u .) . ge_s) args
+makeOp loc (LLt (ITFixed IT64)) args =
+    i64BinOp loc ((extend_u .) . lt_u) args
+makeOp loc (LLe (ITFixed IT64)) args =
+    i64BinOp loc ((extend_u .) . le_u) args
+makeOp loc (LGt (ITFixed IT64)) args =
+    i64BinOp loc ((extend_u .) . gt_u) args
+makeOp loc (LGe (ITFixed IT64)) args =
+    i64BinOp loc ((extend_u .) . ge_u) args
 
 makeOp loc (LPlus (ATInt ITBig)) args =
     bigBinOp loc add args
@@ -790,10 +942,48 @@ makeOp loc (LMinus (ATInt ITBig)) args =
     bigBinOp loc sub args
 makeOp loc (LTimes (ATInt ITBig)) args =
     bigBinOp loc mul args
+makeOp loc (LUDiv ITBig) args =
+    bigBinOp loc div_u args
+makeOp loc (LSDiv (ATInt ITBig)) args =
+    bigBinOp loc div_s args
+makeOp loc (LURem ITBig) args =
+    bigBinOp loc rem_u args
+makeOp loc (LSRem (ATInt ITBig)) args =
+    bigBinOp loc rem_s args
+makeOp loc (LAnd ITBig) args =
+    bigBinOp loc and args
+makeOp loc (LOr ITBig) args =
+    bigBinOp loc or args
+makeOp loc (LXOr ITBig) args =
+    bigBinOp loc xor args
+makeOp loc (LSHL ITBig) args =
+    bigBinOp loc shl args
+makeOp loc (LLSHR ITBig) args =
+    bigBinOp loc shr_u args
+makeOp loc (LASHR ITBig) args =
+    bigBinOp loc shr_s args
+makeOp loc (LCompl ITBig) [x] = do
+    val <- getRegVal x
+    ctor <- genBit64
+    setRegVal loc $ ctor $ load i64 val 8 2 `xor` i64c (-1)
 makeOp loc (LEq (ATInt ITBig)) args =
     bigBinOp loc ((extend_u .) . eq) args
 makeOp loc (LSLt (ATInt ITBig)) args =
     bigBinOp loc ((extend_u .) . lt_s) args
+makeOp loc (LSLe (ATInt ITBig)) args =
+    bigBinOp loc ((extend_u .) . le_s) args
+makeOp loc (LSGt (ATInt ITBig)) args =
+    bigBinOp loc ((extend_u .) . gt_s) args
+makeOp loc (LSGe (ATInt ITBig)) args =
+    bigBinOp loc ((extend_u .) . ge_s) args
+makeOp loc (LLt ITBig) args =
+    bigBinOp loc ((extend_u .) . lt_u) args
+makeOp loc (LLe ITBig) args =
+    bigBinOp loc ((extend_u .) . le_u) args
+makeOp loc (LGt ITBig) args =
+    bigBinOp loc ((extend_u .) . gt_u) args
+makeOp loc (LGe ITBig) args =
+    bigBinOp loc ((extend_u .) . ge_u) args
 
 makeOp loc (LPlus (ATInt ITNative)) args =
     i32BinOp loc add args
@@ -1088,6 +1278,26 @@ f64RelOp loc op [l, r] = do
     right <- getRegVal r
     ctor <- genInt
     setRegVal loc $ ctor $ op (load f64 left 8 2) (load f64 right 8 2)
+
+onInt8 ::
+    (GenFun (Proxy I32) -> GenFun (Proxy I32) -> GenFun (Proxy I32))
+    -> GenFun (Proxy I32)
+    -> GenFun (Proxy I32)
+    -> GenFun (Proxy I32)
+onInt8 op l r =
+    let a = if' i32 (l `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` l) (l) in
+    let b = if' i32 (r `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` r) (r) in
+    a `op` b
+
+onInt16 ::
+    (GenFun (Proxy I32) -> GenFun (Proxy I32) -> GenFun (Proxy I32))
+    -> GenFun (Proxy I32)
+    -> GenFun (Proxy I32)
+    -> GenFun (Proxy I32)
+onInt16 op l r =
+    let a = if' i32 (l `ge_u` i32c (2 ^ 15)) (i32c 0xFFFF0000 `or` l) (l) in
+    let b = if' i32 (r `ge_u` i32c (2 ^ 15)) (i32c 0xFFFF0000 `or` r) (r) in
+    a `op` b
 
 asAddr :: WasmGen Word32 -> WasmGen (GenFun (Proxy I32))
 asAddr expr = do
