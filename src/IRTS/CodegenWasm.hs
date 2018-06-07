@@ -374,12 +374,11 @@ mkWasm defs stackSize heapSize =
                 dec 1 len
             ret res
         intStr <- fun i32 $ do
-            intAddr <- param i32
-            val <- local i32
+            -- intAddr <- param i32
+            val <- param i32
             len <- local i32
             res <- local i32
             i <- local i32
-            val .= load i32 intAddr 8 2
             let zeroCode = i32c 48
             let minusCode = i32c 45
             when (eqz val) $ do
@@ -395,6 +394,29 @@ mkWasm defs stackSize heapSize =
             for (i .= res `add` len) (val `ne` i32c 0) (dec 1 i) $ do
                 store8 i (zeroCode `add` (val `rem_s` i32c 10)) 11 0
                 val .= val `div_s` i32c 10
+            ret res
+        int64Str <- fun i32 $ do
+            -- intAddr <- param i32
+            val <- param i64
+            len <- local i32
+            res <- local i32
+            i <- local i64
+            addr <- local i32
+            let zeroCode = i64c 48
+            let minusCode = i64c 45
+            when (eqz val) $ do
+                res .= packString (i32c 13) (i32c 1)
+                store8 res zeroCode 12 0
+                finish res
+            len .= if' i32 (val `lt_s` i64c 0) (i32c 1) (i32c 0)
+            for (i .= val) (i `ne` i64c 0) (i .= i `div_s` i64c 10) $ inc 1 len
+            res .= packString (i32c 12 `add` len) len
+            when (val `lt_s` i64c 0) $ do
+                store8 res minusCode 12 0
+                val .= val `mul` i64c (-1)
+            for (addr .= res `add` len) (val `ne` i64c 0) (dec 1 addr) $ do
+                store8 addr (zeroCode `add` (val `rem_s` i64c 10)) 11 0
+                val .= val `div_s` i64c 10
             ret res
         strInt <- fun i32 $ do
             strAddr <- param i32
@@ -414,6 +436,24 @@ mkWasm defs stackSize heapSize =
                 val .= (val `mul` i32c 10) `add` (char `sub` zero)
             let sign = if' i32 (load8_u i32 strAddr 12 0 `eq` minus) (i32c (-1)) (i32c 1)
             packInt (sign `mul` val)
+        strInt64 <- fun i64 $ do
+            strAddr <- param i32
+            len <- local i32
+            char <- local i64
+            next <- local i32
+            val <- local i64
+            len .= load i32 strAddr 8 2
+            when (len `le_s` i32c 0) $ finish $ i64c 0
+            let (zero, nine, plus, minus) = (i64c 48, i64c 57, i64c 43, i64c 45)
+            char .= load8_u i64 strAddr 12 0
+            let isSign ch = (ch `eq` minus) `or` (ch `eq` plus)
+            val .= i64c 0
+            for (next .= if' i32 (isSign char) (i32c 1) (i32c 0)) (next `lt_u` len) (inc 1 next) $ do
+                char .= load8_u i64 (strAddr `add` next) 12 0
+                when ((char `lt_u` zero) `or` (char `gt_u` nine)) $ finish $ i64c 0
+                val .= (val `mul` i64c 10) `add` (char `sub` zero)
+            let sign = if' i64 (load8_u i64 strAddr 12 0 `eq` minus) (i64c (-1)) (i64c 1)
+            sign `mul` val
         symbols <- Map.fromList <$> mapM (\(name, _) -> declare () [I32] >>= (\fn -> return (name, fn))) defs
         let bindings = GB {
                 stackStartIdx = stackStart,
@@ -436,7 +476,9 @@ mkWasm defs stackSize heapSize =
                 strWriteFn = strWrite,
                 strReadFn = strRead,
                 strIntFn = strInt,
+                strInt64Fn = strInt64,
                 intStrFn = intStr,
+                int64StrFn = int64Str,
                 strDoubleFn = strDouble,
                 doubleStrFn = doubleStr,
                 readCharFn = readChar,
@@ -502,10 +544,12 @@ data GlobalBindings = GB {
     strWriteFn :: Fn (Proxy I32),
     strReadFn :: Fn (Proxy I32),
     strIntFn :: Fn (Proxy I32),
+    strInt64Fn :: Fn (Proxy I64),
     strDoubleFn :: Fn (Proxy I32),
     doubleStrFn :: Fn (Proxy I32),
     readCharFn :: Fn (Proxy I32),
     intStrFn :: Fn (Proxy I32),
+    int64StrFn :: Fn (Proxy I32),
     expFn :: Fn (Proxy F64),
     logFn :: Fn (Proxy F64),
     sinFn :: Fn (Proxy F64),
@@ -718,12 +762,7 @@ genReserve n = do
 
 {-
 Left to implement:
-data PrimFn = LPlus ArithTy | LMinus ArithTy | LTimes ArithTy
-    | LUDiv IntTy | LSDiv ArithTy | LURem IntTy | LSRem ArithTy
-    | LAnd IntTy | LOr IntTy | LXOr IntTy | LCompl IntTy
-    | LSHL IntTy | LLSHR IntTy | LASHR IntTy
-    | LEq ArithTy | LLt IntTy | LLe IntTy | LGt IntTy | LGe IntTy
-    | LSLt ArithTy | LSLe ArithTy | LSGt ArithTy | LSGe ArithTy
+data PrimFn =
     | LSExt IntTy IntTy | LZExt IntTy IntTy | LTrunc IntTy IntTy
     | LIntFloat IntTy | LFloatInt IntTy | LIntStr IntTy | LStrInt IntTy
     | LBitCast ArithTy ArithTy -- Only for values of equal width
@@ -1049,19 +1088,48 @@ makeOp loc (LSExt ITNative ITBig) [reg] = do
 makeOp loc (LZExt ITNative ITBig) [reg] = do
     val <- getRegVal reg
     ctor <- genBigInt
-    setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
+    setRegVal loc $ ctor $ extend_u $ load i32 val 8 2
 makeOp loc (LTrunc ITBig ITNative) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ wrap $ load i64 val 8 2
-makeOp loc (LIntStr ITNative) [reg] = do
+makeOp loc (LStrInt ITBig) [reg] = do
+    str <- getRegVal reg
+    strInt64 <- asks strInt64Fn
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ call strInt64 [str]
+makeOp loc (LIntStr ITBig) [reg] = do
     val <- getRegVal reg
+    int64Str <- asks int64StrFn
+    setRegVal loc $ call int64Str [load i32 val 8 2]
+makeOp loc (LIntStr ITNative) [reg] = do
+    addr <- getRegVal reg
     intStr <- asks intStrFn
-    setRegVal loc $ call intStr [val]
+    setRegVal loc $ call intStr [load i32 addr 8 2]
 makeOp loc (LStrInt ITNative) [reg] = do
     val <- getRegVal reg
     strInt <- asks strIntFn
     setRegVal loc $ call strInt [val]
+makeOp loc (LIntStr (ITFixed IT8)) [reg] = do
+    val <- getRegVal reg
+    intStr <- asks intStrFn
+    setRegVal loc $ do
+        let val = load i32 val 8 2
+        call intStr [if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val]
+makeOp loc (LIntStr (ITFixed IT16)) [reg] = do
+    val <- getRegVal reg
+    intStr <- asks intStrFn
+    setRegVal loc $ do
+        let val = load i32 val 8 2
+        call intStr [if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val]
+makeOp loc (LIntStr (ITFixed IT32)) [reg] = do
+    val <- getRegVal reg
+    intStr <- asks intStrFn
+    setRegVal loc $ call intStr [load i32 val 8 2]
+makeOp loc (LIntStr (ITFixed IT64)) [reg] = do
+    val <- getRegVal reg
+    int64Str <- asks int64StrFn
+    setRegVal loc $ call int64Str [load i32 val 8 2]
 makeOp loc LFloatStr [reg] = do
     val <- getRegVal reg
     doubleStr <- asks doubleStrFn
