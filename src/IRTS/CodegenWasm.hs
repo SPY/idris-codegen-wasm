@@ -57,6 +57,7 @@ mkWasm defs stackSize heapSize =
         acosFn <- importFunction "rts" "acos" f64 [F64]
         atanFn <- importFunction "rts" "atan" f64 [F64]
         atan2Fn <- importFunction "rts" "atan2" f64 [F64]
+        systemInfoFn <- importFunction "rts" "systemInfo" i32 [I32]
         export "mem" $ memory 20 Nothing
     
         stackStart <- export "stackStart" $ global Const i32 0
@@ -492,6 +493,7 @@ mkWasm defs stackSize heapSize =
                 acosFn,
                 atanFn,
                 atan2Fn,
+                systemInfoFn,
                 symbols
             }
         let (funcs, st) = runWasmGen emptyState bindings $ mapM mkFunc defs
@@ -559,7 +561,8 @@ data GlobalBindings = GB {
     acosFn :: Fn (Proxy F64),
     atanFn :: Fn (Proxy F64),
     atan2Fn :: Fn (Proxy F64),
-    printValFn :: Fn ()
+    printValFn :: Fn (),
+    systemInfoFn :: Fn (Proxy I32)
 }
 
 type WasmGen = StateT GenState (Reader GlobalBindings)
@@ -762,21 +765,8 @@ genReserve n = do
 
 {-
 Left to implement:
-data PrimFn =
-    | LIntFloat IntTy | LFloatInt IntTy | LIntStr IntTy | LStrInt IntTy
-    | LBitCast ArithTy ArithTy -- Only for values of equal width
-
-    -- system info
-    | LSystemInfo
-
-    | LFork
-    | LPar -- evaluate argument anywhere, possibly on another
-            -- core or another machine. 'id' is a valid implementation
     | LExternal Name
 -}
--- data NativeTy = IT8 | IT16 | IT32 | IT64
--- data IntTy = ITFixed NativeTy | ITNative | ITBig | ITChar
--- data ArithTy = ATInt IntTy | ATFloat
 makeOp :: Reg -> PrimFn -> [Reg] -> WasmGen (GenFun ())
 makeOp loc (LPlus (ATInt (ITFixed IT8))) args =
     i32BinOp loc (\l r -> and (i32c 0xFF) $ add l r) args
@@ -1080,6 +1070,14 @@ makeOp loc (LFloatInt ITNative) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ trunc_s i32 $ load f64 val 8 2
+makeOp loc (LIntFloat ITBig) [reg] = do
+    val <- getRegVal reg
+    ctor <- genFloat
+    setRegVal loc $ ctor $ convert_s f64 $ load i64 val 8 2
+makeOp loc (LFloatInt ITBig) [reg] = do
+    val <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ trunc_s i64 $ load f64 val 8 2
 makeOp loc (LSExt ITNative ITBig) [reg] = do
     val <- getRegVal reg
     ctor <- genBigInt
@@ -1512,6 +1510,10 @@ makeOp loc LReadStr [_] = do
     strRead <- asks strReadFn
     setRegVal loc $ call strRead []
 
+makeOp loc LSystemInfo [reg] = do
+    val <- getRegVal reg
+    systemInfo <- asks systemInfoFn
+    setRegVal loc $ call systemInfo [arg val]
 makeOp loc LCrash [reg] = do
     str <- getRegVal reg
     raiseError <- asks raiseErrorFn

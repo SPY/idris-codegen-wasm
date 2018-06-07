@@ -312,6 +312,17 @@
             function raiseError(strAddr) {
                 throw new Error('Idris Error: ' + loadString(strAddr))
             }
+
+            function systemInfo(addr) {
+                const infoType = mem.getUint32(addr + 8, true)
+                switch (infoType) {
+                    case 0: // backend
+                        return makeString('wasm')
+                    case 1: // OS
+                        return makeString(navigator.platform)
+                }
+                return makeString('')
+            }
         
             function printConstSection(end) {
                 const vals = []
@@ -356,6 +367,7 @@
             ).then(bytes => {
                 return WebAssembly.instantiate(bytes, {
                     rts: {
+                        systemInfo,
                         raiseError,
                         gc,
                         strWrite,
