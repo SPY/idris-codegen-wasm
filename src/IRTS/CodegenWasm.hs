@@ -1085,10 +1085,6 @@ makeOp loc (LSExt ITNative ITBig) [reg] = do
     val <- getRegVal reg
     ctor <- genBigInt
     setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
-makeOp loc (LZExt ITNative ITBig) [reg] = do
-    val <- getRegVal reg
-    ctor <- genBigInt
-    setRegVal loc $ ctor $ extend_u $ load i32 val 8 2
 makeOp loc (LTrunc ITBig ITNative) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
@@ -1304,20 +1300,79 @@ makeOp loc (LSExt (ITFixed IT32) (ITFixed IT64)) [reg] = do
     ctor <- genBit64
     setRegVal loc $ ctor $ extend_s $ load i32 addr 8 2
 makeOp loc (LSExt (ITFixed IT64) (ITFixed IT64)) [reg] = getRegVal reg >>= setRegVal loc
--- doOp v (LZExt ITNative (ITFixed to)) [x]
---     = v ++ "idris_b" ++ show (nativeTyWidth to) ++ "const(vm, (uintptr_t)GETINT(" ++ creg x ++ "))"
--- doOp v (LZExt ITChar (ITFixed to)) [x]
---     = doOp v (LZExt ITNative (ITFixed to)) [x]
--- doOp v (LZExt (ITFixed from) ITNative) [x]
---     = v ++ "MKINT((i_int)GETBITS" ++ show (nativeTyWidth from) ++ "(" ++ creg x ++ "))"
--- doOp v (LZExt (ITFixed from) ITChar) [x]
---     = doOp v (LZExt (ITFixed from) ITNative) [x]
--- doOp v (LZExt (ITFixed from) ITBig) [x]
---     = v ++ "MKBIGUI(vm, GETBITS" ++ show (nativeTyWidth from) ++ "(" ++ creg x ++ "))"
--- doOp v (LZExt ITNative ITBig) [x]
---     = v ++ "MKBIGUI(vm, (uintptr_t)GETINT(" ++ creg x ++ "))"
--- doOp v (LZExt (ITFixed from) (ITFixed to)) [x]
---     | nativeTyWidth from < nativeTyWidth to = bitCoerce v "Z" from to x
+makeOp loc (LZExt ITNative (ITFixed IT8)) [reg] = do
+    val <- getRegVal reg
+    ctor <- genInt
+    setRegVal loc $ ctor $ i32c 0xFF `and` load i32 val 8 2
+makeOp loc (LZExt ITNative (ITFixed IT16)) [reg] = do
+    val <- getRegVal reg
+    ctor <- genInt
+    setRegVal loc $ ctor $ i32c 0xFFFF `and` load i32 val 8 2
+makeOp loc (LZExt ITNative (ITFixed IT32)) [reg] = do
+    val <- getRegVal reg
+    ctor <- genBit32
+    setRegVal loc $ ctor $ load i32 val 8 2
+makeOp loc (LZExt ITNative (ITFixed IT64)) [reg] = do
+    val <- getRegVal reg
+    ctor <- genBit64
+    setRegVal loc $ ctor $ extend_u $ load i32 val 8 2
+makeOp loc (LZExt ITChar (ITFixed to)) args = makeOp loc (LZExt ITNative (ITFixed to)) args
+makeOp loc (LZExt (ITFixed IT8) ITNative) [reg] = getRegVal reg >>= setRegVal loc
+makeOp loc (LZExt (ITFixed IT16) ITNative) [reg] = getRegVal reg >>= setRegVal loc
+makeOp loc (LZExt (ITFixed IT32) ITNative) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genInt
+    setRegVal loc $ ctor $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT64) ITNative) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genInt
+    setRegVal loc $ ctor $ wrap $ load i64 addr 8 2
+makeOp loc (LZExt (ITFixed from) ITChar) args = makeOp loc (LZExt (ITFixed from) ITNative) args
+makeOp loc (LZExt (ITFixed IT8) ITBig) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT16) ITBig) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT32) ITBig) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT64) ITBig) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ load i64 addr 8 2
+makeOp loc (LZExt ITNative ITBig) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBigInt
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT8) (ITFixed IT8)) [reg] = getRegVal reg >>= setRegVal loc
+makeOp loc (LZExt (ITFixed IT8) (ITFixed IT16)) [reg] = getRegVal reg >>= setRegVal loc
+makeOp loc (LZExt (ITFixed IT8) (ITFixed IT32)) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBit32
+    setRegVal loc $ ctor $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT8) (ITFixed IT64)) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBit64
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT16) (ITFixed IT16)) [reg] = getRegVal reg >>= setRegVal loc
+makeOp loc (LZExt (ITFixed IT16) (ITFixed IT32)) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBit32
+    setRegVal loc $ ctor $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT16) (ITFixed IT64)) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBit64
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT32) (ITFixed IT32)) [reg] = getRegVal reg >>= setRegVal loc
+makeOp loc (LZExt (ITFixed IT32) (ITFixed IT64)) [reg] = do
+    addr <- getRegVal reg
+    ctor <- genBit64
+    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+makeOp loc (LZExt (ITFixed IT64) (ITFixed IT64)) [reg] = getRegVal reg >>= setRegVal loc
 -- doOp v (LTrunc ITNative (ITFixed to)) [x]
 --     = v ++ "idris_b" ++ show (nativeTyWidth to) ++ "const(vm, GETINT(" ++ creg x ++ "))"
 -- doOp v (LTrunc ITChar (ITFixed to)) [x]
