@@ -975,24 +975,51 @@ makeOp loc (LCompl (ITFixed IT64)) [x] = do
     val <- getRegVal x
     ctor <- genBit64
     setRegVal loc $ ctor $ load i64 val 8 2 `xor` i64c (-1)
-makeOp loc (LEq (ATInt (ITFixed IT64))) args =
-    i64BinOp loc ((extend_u .) . eq) args
-makeOp loc (LSLt (ATInt (ITFixed IT64))) args =
-    i64BinOp loc ((extend_u .) . lt_s) args
-makeOp loc (LSLe (ATInt (ITFixed IT64))) args =
-    i64BinOp loc ((extend_u .) . le_s) args
-makeOp loc (LSGt (ATInt (ITFixed IT64))) args =
-    i64BinOp loc ((extend_u .) . gt_s) args
-makeOp loc (LSGe (ATInt (ITFixed IT64))) args =
-    i64BinOp loc ((extend_u .) . ge_s) args
-makeOp loc (LLt (ITFixed IT64)) args =
-    i64BinOp loc ((extend_u .) . lt_u) args
-makeOp loc (LLe (ITFixed IT64)) args =
-    i64BinOp loc ((extend_u .) . le_u) args
-makeOp loc (LGt (ITFixed IT64)) args =
-    i64BinOp loc ((extend_u .) . gt_u) args
-makeOp loc (LGe (ITFixed IT64)) args =
-    i64BinOp loc ((extend_u .) . ge_u) args
+makeOp loc (LEq (ATInt (ITFixed IT64))) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ eq (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSLt (ATInt (ITFixed IT64))) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ lt_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSLe (ATInt (ITFixed IT64))) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ le_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSGt (ATInt (ITFixed IT64))) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ gt_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSGe (ATInt (ITFixed IT64))) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ ge_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LLt (ITFixed IT64)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ lt_u (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LLe (ITFixed IT64)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ le_u (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LGt (ITFixed IT64)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ gt_u (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LGe (ITFixed IT64)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ ge_u (load i64 left 8 2) (load i64 right 8 2)
 
 makeOp loc (LPlus (ATInt ITBig)) args =
     bigBinOp loc add args
@@ -1024,24 +1051,51 @@ makeOp loc (LCompl ITBig) [x] = do
     val <- getRegVal x
     ctor <- genBit64
     setRegVal loc $ ctor $ load i64 val 8 2 `xor` i64c (-1)
-makeOp loc (LEq (ATInt ITBig)) args =
-    bigBinOp loc ((extend_u .) . eq) args
-makeOp loc (LSLt (ATInt ITBig)) args =
-    bigBinOp loc ((extend_u .) . lt_s) args
-makeOp loc (LSLe (ATInt ITBig)) args =
-    bigBinOp loc ((extend_u .) . le_s) args
-makeOp loc (LSGt (ATInt ITBig)) args =
-    bigBinOp loc ((extend_u .) . gt_s) args
-makeOp loc (LSGe (ATInt ITBig)) args =
-    bigBinOp loc ((extend_u .) . ge_s) args
-makeOp loc (LLt ITBig) args =
-    bigBinOp loc ((extend_u .) . lt_u) args
-makeOp loc (LLe ITBig) args =
-    bigBinOp loc ((extend_u .) . le_u) args
-makeOp loc (LGt ITBig) args =
-    bigBinOp loc ((extend_u .) . gt_u) args
-makeOp loc (LGe ITBig) args =
-    bigBinOp loc ((extend_u .) . ge_u) args
+makeOp loc (LEq (ATInt ITBig)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ eq (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSLt (ATInt ITBig)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ lt_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSLe (ATInt ITBig)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ le_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSGt (ATInt ITBig)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ gt_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LSGe (ATInt ITBig)) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ ge_s (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LLt ITBig) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ lt_u (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LLe ITBig) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ le_u (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LGt ITBig) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ gt_u (load i64 left 8 2) (load i64 right 8 2)
+makeOp loc (LGe ITBig) [l, r] = do
+    left <- getRegVal l
+    right <- getRegVal r
+    ctor <- genInt
+    setRegVal loc $ ctor $ ge_u (load i64 left 8 2) (load i64 right 8 2)
 
 makeOp loc (LPlus (ATInt ITNative)) args =
     i32BinOp loc add args
@@ -1746,6 +1800,9 @@ genInt = return $ \val -> (val `shl` i32c 1) `add` i32c 1
 
 unpackInt :: GenFun (Proxy I32) -> GenFun (Proxy I32)
 unpackInt val = val `shr_s` i32c 1
+
+isInt :: GenFun (Proxy I32) -> GenFun (Proxy I32)
+isInt val = (val `and` i32c 1) `eq` i32c 1
 
 data FloatVal = FV { hdr :: ValHeader, val :: Double } deriving (Show, Eq)
 
