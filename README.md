@@ -10,10 +10,10 @@
   * [x] Double operations
   * [x] Bit8/16/32/64 operations
   * [x] Convertions (int to big num, bits to int, etc)
+  * [x] Unwrap self-tail calls with LOOP instruction
 
 ## Todo
   * [ ] BigNum primitives(now they are emulated as WASM i64 number)
-  * [ ] Unwrap self-tail calls with LOOP instruction
   * [ ] Effective unboxed representation for int and char
   * [ ] Effective substrings representation as StrOffset
   * [ ] Pass Idris language test suite

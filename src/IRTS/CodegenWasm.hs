@@ -17,6 +17,7 @@ import qualified Data.Map as Map
 import Data.Monoid ((<>), mempty)
 import Data.Proxy
 import Prelude hiding (and, or)
+import Data.Maybe (fromMaybe)
 
 import qualified Data.Serialize as Serialize
 import qualified Data.ByteString.Lazy as LBS
@@ -577,9 +578,33 @@ mkFunc (name, byteCode) = do
     return $ implement fn $ do
         oldBase <- param i32
         myOldBase <- local i32
-        sequence_ $ map ($ (oldBase, myOldBase)) body
+        if any (hasTailCallOf name) byteCode
+        then do
+            loop () $ do
+                lbl <- label
+                sequence_ $ map ($ BCCtx { oldBase, myOldBase, selfName = name, tailCallLoop = Just lbl }) body
+        else sequence_ $ map ($ BCCtx { oldBase, myOldBase, selfName = name, tailCallLoop = Nothing }) body
 
-bcToInstr :: BC -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+data BCCtx = BCCtx {
+    oldBase :: Loc I32,
+    myOldBase :: Loc I32,
+    selfName :: Name,
+    tailCallLoop :: Maybe (Label ())
+}
+
+hasTailCallOf :: Name -> BC -> Bool
+hasTailCallOf name (CASE _ _ branches defaultBranch) =
+    let tailCallInBranches = any (any (hasTailCallOf name) . snd) branches in
+    let tailCallInDefault = any (hasTailCallOf name) $ fromMaybe [] defaultBranch in
+    tailCallInBranches || tailCallInDefault
+hasTailCallOf name (CONSTCASE _ branches defaultBranch) =
+    let tailCallInBranches = any (any (hasTailCallOf name) . snd) branches in
+    let tailCallInDefault = any (hasTailCallOf name) $ fromMaybe [] defaultBranch in
+    tailCallInBranches || tailCallInDefault
+hasTailCallOf name (TAILCALL callee) = name == callee
+hasTailCallOf _ _ = False
+
+bcToInstr :: BC -> WasmGen (BCCtx -> GenFun ())
 bcToInstr (ASSIGN l r) = const <$> (getRegVal r >>= setRegVal l)
 bcToInstr (ASSIGNCONST reg c) = const <$> (makeConst c >>= setRegVal reg)
 bcToInstr (UPDATE l r) = const <$> (getRegVal r >>= setRegVal l)
@@ -592,10 +617,13 @@ bcToInstr (PROJECTINTO dst src idx) = do
 bcToInstr (CONSTCASE val branches defaultBranch) = genConstCase val branches defaultBranch
 bcToInstr (CALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
-    return $ \(_, myOldBase) -> call fnIdx [arg myOldBase]
+    return $ \BCCtx { myOldBase } -> call fnIdx [arg myOldBase]
 bcToInstr (TAILCALL n) = do
     Just fnIdx <- Map.lookup n <$> asks symbols
-    return $ \(oldBase, _) -> call fnIdx [arg oldBase]
+    return $ \BCCtx { oldBase, selfName, tailCallLoop } ->
+        if selfName == n
+        then let Just lbl = tailCallLoop in br lbl
+        else call fnIdx [arg oldBase]
 bcToInstr (SLIDE n)
     | n == 0 = return $ const $ return ()
     | n <= 4 = genSlide n
@@ -604,7 +632,7 @@ bcToInstr (SLIDE n)
         return $ const $ call slide [i32c n]
 bcToInstr REBASE = do
     stackBase <- asks stackBaseIdx
-    return $ \(oldBase, _) -> stackBase .= oldBase
+    return $ \BCCtx { oldBase } -> stackBase .= oldBase
 bcToInstr (RESERVE n)
     | n == 0 = return $ const $ return ()
     | n <= 4 = genReserve n
@@ -633,7 +661,7 @@ bcToInstr (BASETOP n) = do
     return $ const $ stackBase .= (stackTop `add` i32c (n * 4))
 bcToInstr STOREOLD = do
     stackBase <- asks stackBaseIdx
-    return $ \(_, myOldBase) -> myOldBase .= stackBase
+    return $ \BCCtx { myOldBase } -> myOldBase .= stackBase
 bcToInstr (OP loc op args) = const <$> makeOp loc op args
 bcToInstr (NULL reg) = const <$> setRegVal reg (i32c 0)
 bcToInstr (ERROR str) = do
@@ -670,16 +698,16 @@ setRegVal (T offset) val = do
     idx <- asks stackTopIdx
     return $ store idx val (offset * 4) 2
 
-genCase :: Bool -> Reg -> [(Int, [BC])] -> Maybe [BC] -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genCase :: Bool -> Reg -> [(Int, [BC])] -> Maybe [BC] -> WasmGen (BCCtx -> GenFun ())
 genCase safe reg branches defaultBranch = do
     addr <- getRegVal reg
     branchesBody <- mapM toFunGen branches
     defBody <- case defaultBranch of
         Just code -> mapM bcToInstr code
         Nothing -> return $ [const $ return ()]
-    return $ \oldBases -> do
-        let defCode = sequence_ $ map ($ oldBases) defBody
-        let branchesCode = map (\(tag, code) -> (tag, code oldBases)) branchesBody
+    return $ \ctx -> do
+        let defCode = sequence_ $ map ($ ctx) defBody
+        let branchesCode = map (\(tag, code) -> (tag, code ctx)) branchesBody
         let conCheck = load8_u i32 addr 0 0 `eq` i32c (fromEnum Con)
         let conTag = load i32 addr 8 2
         let conGuard body
@@ -689,38 +717,38 @@ genCase safe reg branches defaultBranch = do
             genSwitch ((tag, code):rest) = if' () (conTag `eq` i32c tag) code (genSwitch rest)
         conGuard $ genSwitch branchesCode
     where
-        toFunGen :: (Int, [BC]) -> WasmGen (Int, ((Loc I32, Loc I32) -> GenFun ()))
+        toFunGen :: (Int, [BC]) -> WasmGen (Int, (BCCtx -> GenFun ()))
         toFunGen (tag, code) = do
             instrs <- mapM bcToInstr code
-            return $ (tag, (\oldBases -> sequence_ $ map ($ oldBases) instrs))
+            return $ (tag, (\ctx -> sequence_ $ map ($ ctx) instrs))
 
-genProject :: Reg -> Int -> Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genProject :: Reg -> Int -> Int -> WasmGen (BCCtx -> GenFun ())
 genProject reg offset arity = do
     stackBase <- asks stackBaseIdx
     addr <- getRegVal reg
     return $ const $ forM_ [0..arity-1] $ \i -> do
         store stackBase (load i32 addr (12 + i * 4) 2) ((offset + i) * 4) 2
 
-genConstCase :: Reg -> [(Const, [BC])] -> Maybe [BC] -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genConstCase :: Reg -> [(Const, [BC])] -> Maybe [BC] -> WasmGen (BCCtx -> GenFun ())
 genConstCase reg branches defaultBranch = do
     addr <- getRegVal reg
     branchesBody <- mapM (toFunGen addr) branches
     defBody <- case defaultBranch of
         Just code -> mapM bcToInstr code
         Nothing -> return $ [const $ return ()]
-    return $ \oldBases -> do
-        let defCode = sequence_ $ map ($ oldBases) defBody
-        let branchesCode = map (\(cond, code) -> (cond, code oldBases)) branchesBody
+    return $ \ctx -> do
+        let defCode = sequence_ $ map ($ ctx) defBody
+        let branchesCode = map (\(cond, code) -> (cond, code ctx)) branchesBody
         let genSwitch [] = defCode
             genSwitch ((cond, code):rest) = if' () cond code (genSwitch rest)
         genSwitch branchesCode
     where
-        toFunGen :: GenFun (Proxy I32) -> (Const, [BC]) -> WasmGen (GenFun (Proxy I32), ((Loc I32, Loc I32) -> GenFun ()))
+        toFunGen :: GenFun (Proxy I32) -> (Const, [BC]) -> WasmGen (GenFun (Proxy I32), (BCCtx -> GenFun ()))
         toFunGen addr (c, code) = do
             instrs <- mapM bcToInstr code
             constCode <- makeConst c
             cond <- mkConstChecker c addr constCode
-            return $ (cond, (\oldBases -> sequence_ $ map ($ oldBases) instrs))
+            return $ (cond, (\ctx -> sequence_ $ map ($ ctx) instrs))
 
         mkConstChecker :: Const -> GenFun (Proxy I32) -> GenFun (Proxy I32) -> WasmGen (GenFun (Proxy I32))
         mkConstChecker c val pat | intConst c = return $ eq (load i32 val 8 2) (load i32 pat 8 2)
@@ -747,14 +775,14 @@ genConstCase reg branches defaultBranch = do
         strConst (Str _) = True
         strConst _ = False
 
-genSlide :: Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genSlide :: Int -> WasmGen (BCCtx -> GenFun ())
 genSlide n = do
     stackBase <- asks stackBaseIdx
     stackTop <- asks stackTopIdx
     return $ const $ forM_ [0..n-1] $ \i -> do
         store stackBase (load i32 stackTop (i * 4) 2) (i * 4) 2
 
-genReserve :: Int -> WasmGen ((Loc I32, Loc I32) -> GenFun ())
+genReserve :: Int -> WasmGen (BCCtx -> GenFun ())
 genReserve n = do
     stackTop <- asks stackTopIdx
     stackEnd <- asks stackEndIdx
