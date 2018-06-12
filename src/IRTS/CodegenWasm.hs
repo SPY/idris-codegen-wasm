@@ -11,7 +11,7 @@ import Control.Monad.State (StateT, get, gets, put, modify, runStateT)
 import Numeric.Natural (Natural)
 import Data.Word (Word8, Word16, Word32, Word64)
 import Data.Int (Int32, Int64)
-import Data.Bits ((.&.))
+import Data.Bits ((.&.), shift)
 import qualified Data.Char as Char
 import qualified Data.Map as Map
 import Data.Monoid ((<>), mempty)
@@ -125,6 +125,9 @@ mkWasm defs stackSize heapSize =
             when (addr `lt_u` stackStart) $ do
                 -- constant section
                 finish addr
+            when ((addr `and` i32c 1) `eq` i32c 1) $ do
+                -- native int
+                finish addr
             typeTag .= load8_u i32 addr 0 0
             let isTag tag = typeTag `eq` i32c (fromEnum tag)
             when (isTag Fwd) $ finish $ load i32 addr 8 2
@@ -201,11 +204,7 @@ mkWasm defs stackSize heapSize =
                 store tmpReg len 8 2
                 ret tmpReg
         let packInt :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
-            packInt val = do
-                tmpReg .= call alloc [i32c 12]
-                store8 tmpReg (i32c $ fromEnum Int) 0 0
-                store tmpReg val 8 2
-                ret tmpReg
+            packInt val = (val `shl` i32c 1) `add` i32c 1
         strConcat <- fun i32 $ do
             a <- param i32
             b <- param i32
@@ -751,7 +750,8 @@ genConstCase reg branches defaultBranch = do
             return $ (cond, (\ctx -> sequence_ $ map ($ ctx) instrs))
 
         mkConstChecker :: Const -> GenFun (Proxy I32) -> GenFun (Proxy I32) -> WasmGen (GenFun (Proxy I32))
-        mkConstChecker c val pat | intConst c = return $ eq (load i32 val 8 2) (load i32 pat 8 2)
+        mkConstChecker c val pat | intConst c = return $ eq val pat
+        mkConstChecker c val pat | int32Const c = return $ eq (load i32 val 8 2) (load i32 pat 8 2)
         mkConstChecker c val pat | int64Const c = return $ eq (load i64 val 8 2) (load i64 pat 8 2)
         mkConstChecker c val pat | bigIntConst c = return $ eq (load i64 val 8 2) (load i64 pat 8 2)
         mkConstChecker c val pat | strConst c = do
@@ -763,8 +763,10 @@ genConstCase reg branches defaultBranch = do
         intConst (Ch _) = True
         intConst (B8 _) = True
         intConst (B16 _) = True
-        intConst (B32 _) = True
         intConst _ = False
+
+        int32Const (B32 _) = True
+        int32Const _ = False
 
         int64Const (B64 _) = True
         int64Const _ = False
@@ -1070,7 +1072,7 @@ makeOp loc (LASHR ITNative) args =
 makeOp loc (LCompl ITNative) [x] = do
     val <- getRegVal x
     ctor <- genInt
-    setRegVal loc $ ctor $ load i32 val 8 2 `xor` i32c (-1)
+    setRegVal loc $ ctor $ unpackInt val `xor` i32c (-1)
 makeOp loc (LEq (ATInt ITNative)) args =
     i32BinOp loc eq args
 makeOp loc (LSLt (ATInt ITNative)) args =
@@ -1093,7 +1095,7 @@ makeOp loc (LGe ITNative) args =
 makeOp loc (LIntFloat ITNative) [reg] = do
     val <- getRegVal reg
     ctor <- genFloat
-    setRegVal loc $ ctor $ convert_s f64 $ load i32 val 8 2
+    setRegVal loc $ ctor $ convert_s f64 $ unpackInt val
 makeOp loc (LFloatInt ITNative) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
@@ -1109,7 +1111,7 @@ makeOp loc (LFloatInt ITBig) [reg] = do
 makeOp loc (LSExt ITNative ITBig) [reg] = do
     val <- getRegVal reg
     ctor <- genBigInt
-    setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
+    setRegVal loc $ ctor $ extend_s $ unpackInt val
 makeOp loc (LTrunc ITBig ITNative) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
@@ -1126,7 +1128,7 @@ makeOp loc (LIntStr ITBig) [reg] = do
 makeOp loc (LIntStr ITNative) [reg] = do
     addr <- getRegVal reg
     intStr <- asks intStrFn
-    setRegVal loc $ call intStr [load i32 addr 8 2]
+    setRegVal loc $ call intStr [unpackInt addr]
 makeOp loc (LStrInt ITNative) [reg] = do
     val <- getRegVal reg
     strInt <- asks strIntFn
@@ -1135,13 +1137,13 @@ makeOp loc (LIntStr (ITFixed IT8)) [reg] = do
     addr <- getRegVal reg
     intStr <- asks intStrFn
     setRegVal loc $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         call intStr [if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val]
 makeOp loc (LIntStr (ITFixed IT16)) [reg] = do
     addr <- getRegVal reg
     intStr <- asks intStrFn
     setRegVal loc $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         call intStr [if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val]
 makeOp loc (LIntStr (ITFixed IT32)) [reg] = do
     val <- getRegVal reg
@@ -1233,13 +1235,13 @@ makeOp loc (LSExt (ITFixed IT8) ITBig) [reg] = do
     addr <- getRegVal reg
     ctor <- genBigInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         extend_s $ if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val
 makeOp loc (LSExt (ITFixed IT16) ITBig) [reg] = do
     addr <- getRegVal reg
     ctor <- genBigInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         extend_s $ if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val
 makeOp loc (LSExt (ITFixed IT32) ITBig) [reg] = do
     val <- getRegVal reg
@@ -1252,31 +1254,31 @@ makeOp loc (LSExt (ITFixed IT64) ITBig) [reg] = do
 makeOp loc (LSExt ITNative (ITFixed IT8)) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ i32c 0xFF `and` load i32 val 8 2
+    setRegVal loc $ ctor $ i32c 0xFF `and` unpackInt val
 makeOp loc (LSExt ITNative (ITFixed IT16)) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ i32c 0xFFFF `and` load i32 val 8 2
+    setRegVal loc $ ctor $ i32c 0xFFFF `and` unpackInt val
 makeOp loc (LSExt ITNative (ITFixed IT32)) [reg] = do
     val <- getRegVal reg
     ctor <- genBit32
-    setRegVal loc $ ctor $ load i32 val 8 2
+    setRegVal loc $ ctor $ unpackInt val
 makeOp loc (LSExt ITNative (ITFixed IT64)) [reg] = do
     val <- getRegVal reg
     ctor <- genBit64
-    setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
+    setRegVal loc $ ctor $ extend_s $ unpackInt val
 makeOp loc (LSExt ITChar (ITFixed to)) args = makeOp loc (LSExt ITNative (ITFixed to)) args
 makeOp loc (LSExt (ITFixed IT8) ITNative) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val
 makeOp loc (LSExt (ITFixed IT16) ITNative) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val
 makeOp loc (LSExt (ITFixed IT32) ITNative) [reg] = do
     addr <- getRegVal reg
@@ -1292,32 +1294,32 @@ makeOp loc (LSExt (ITFixed IT8) (ITFixed IT16)) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c 128) (i32c 0xFF00 `or` val) val
 makeOp loc (LSExt (ITFixed IT8) (ITFixed IT32)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit32
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val
 makeOp loc (LSExt (ITFixed IT8) (ITFixed IT64)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit64
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         extend_s $ if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val
 makeOp loc (LSExt (ITFixed IT16) (ITFixed IT16)) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LSExt (ITFixed IT16) (ITFixed IT32)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit32
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val
 makeOp loc (LSExt (ITFixed IT16) (ITFixed IT64)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit64
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         extend_s $ if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val
 makeOp loc (LSExt (ITFixed IT32) (ITFixed IT32)) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LSExt (ITFixed IT32) (ITFixed IT64)) [reg] = do
@@ -1328,19 +1330,19 @@ makeOp loc (LSExt (ITFixed IT64) (ITFixed IT64)) [reg] = getRegVal reg >>= setRe
 makeOp loc (LZExt ITNative (ITFixed IT8)) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ i32c 0xFF `and` load i32 val 8 2
+    setRegVal loc $ ctor $ i32c 0xFF `and` unpackInt val
 makeOp loc (LZExt ITNative (ITFixed IT16)) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ i32c 0xFFFF `and` load i32 val 8 2
+    setRegVal loc $ ctor $ i32c 0xFFFF `and` unpackInt val
 makeOp loc (LZExt ITNative (ITFixed IT32)) [reg] = do
     val <- getRegVal reg
     ctor <- genBit32
-    setRegVal loc $ ctor $ load i32 val 8 2
+    setRegVal loc $ ctor $ unpackInt val
 makeOp loc (LZExt ITNative (ITFixed IT64)) [reg] = do
     val <- getRegVal reg
     ctor <- genBit64
-    setRegVal loc $ ctor $ extend_u $ load i32 val 8 2
+    setRegVal loc $ ctor $ extend_u $ unpackInt val
 makeOp loc (LZExt ITChar (ITFixed to)) args = makeOp loc (LZExt ITNative (ITFixed to)) args
 makeOp loc (LZExt (ITFixed IT8) ITNative) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LZExt (ITFixed IT16) ITNative) [reg] = getRegVal reg >>= setRegVal loc
@@ -1360,7 +1362,7 @@ makeOp loc (LZExt (ITFixed IT8) ITBig) [reg] = do
 makeOp loc (LZExt (ITFixed IT16) ITBig) [reg] = do
     addr <- getRegVal reg
     ctor <- genBigInt
-    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+    setRegVal loc $ ctor $ extend_u $ unpackInt addr
 makeOp loc (LZExt (ITFixed IT32) ITBig) [reg] = do
     addr <- getRegVal reg
     ctor <- genBigInt
@@ -1372,26 +1374,26 @@ makeOp loc (LZExt (ITFixed IT64) ITBig) [reg] = do
 makeOp loc (LZExt ITNative ITBig) [reg] = do
     addr <- getRegVal reg
     ctor <- genBigInt
-    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+    setRegVal loc $ ctor $ extend_u $ unpackInt addr
 makeOp loc (LZExt (ITFixed IT8) (ITFixed IT8)) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LZExt (ITFixed IT8) (ITFixed IT16)) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LZExt (ITFixed IT8) (ITFixed IT32)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit32
-    setRegVal loc $ ctor $ load i32 addr 8 2
+    setRegVal loc $ ctor $ unpackInt addr
 makeOp loc (LZExt (ITFixed IT8) (ITFixed IT64)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit64
-    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+    setRegVal loc $ ctor $ extend_u $ unpackInt addr
 makeOp loc (LZExt (ITFixed IT16) (ITFixed IT16)) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LZExt (ITFixed IT16) (ITFixed IT32)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit32
-    setRegVal loc $ ctor $ load i32 addr 8 2
+    setRegVal loc $ ctor $ unpackInt addr
 makeOp loc (LZExt (ITFixed IT16) (ITFixed IT64)) [reg] = do
     addr <- getRegVal reg
     ctor <- genBit64
-    setRegVal loc $ ctor $ extend_u $ load i32 addr 8 2
+    setRegVal loc $ ctor $ extend_u $ unpackInt addr
 makeOp loc (LZExt (ITFixed IT32) (ITFixed IT32)) [reg] = getRegVal reg >>= setRegVal loc
 makeOp loc (LZExt (ITFixed IT32) (ITFixed IT64)) [reg] = do
     addr <- getRegVal reg
@@ -1401,31 +1403,31 @@ makeOp loc (LZExt (ITFixed IT64) (ITFixed IT64)) [reg] = getRegVal reg >>= setRe
 makeOp loc (LTrunc ITNative (ITFixed IT8)) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ i32c 0xFF `and` load i32 val 8 2
+    setRegVal loc $ ctor $ i32c 0xFF `and` unpackInt val
 makeOp loc (LTrunc ITNative (ITFixed IT16)) [reg] = do
     val <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ i32c 0xFFFF `and` load i32 val 8 2
+    setRegVal loc $ ctor $ i32c 0xFFFF `and` unpackInt val
 makeOp loc (LTrunc ITNative (ITFixed IT32)) [reg] = do
     val <- getRegVal reg
     ctor <- genBit32
-    setRegVal loc $ ctor $ load i32 val 8 2
+    setRegVal loc $ ctor $ unpackInt val
 makeOp loc (LTrunc ITNative (ITFixed IT64)) [reg] = do
     val <- getRegVal reg
     ctor <- genBit64
-    setRegVal loc $ ctor $ extend_s $ load i32 val 8 2
+    setRegVal loc $ ctor $ extend_s $ unpackInt val
 makeOp loc (LTrunc ITChar (ITFixed to)) args = makeOp loc (LTrunc ITNative (ITFixed to)) args
 makeOp loc (LTrunc (ITFixed IT8) ITNative) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c 128) (i32c 0xFFFFFF00 `or` val) val
 makeOp loc (LTrunc (ITFixed IT16) ITNative) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
     setRegVal loc $ ctor $ do
-        let val = load i32 addr 8 2
+        let val = unpackInt addr
         if' i32 (val `ge_u` i32c (2^15)) (i32c 0xFFFF0000 `or` val) val
 makeOp loc (LTrunc (ITFixed IT32) ITNative) [reg] = do
     addr <- getRegVal reg
@@ -1440,7 +1442,7 @@ makeOp loc (LTrunc (ITFixed IT8) (ITFixed IT8)) [reg] = getRegVal reg >>= setReg
 makeOp loc (LTrunc (ITFixed IT16) (ITFixed IT8)) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ and (i32c 0xFF) $ load i32 addr 8 2
+    setRegVal loc $ ctor $ and (i32c 0xFF) $ unpackInt addr
 makeOp loc (LTrunc (ITFixed IT32) (ITFixed IT8)) [reg] = do
     addr <- getRegVal reg
     ctor <- genInt
@@ -1514,12 +1516,12 @@ makeOp loc LStrCons [charReg, tailReg] = do
     char <- getRegVal charReg
     tail <- getRegVal tailReg
     strCons <- asks strConsFn
-    setRegVal loc $ call strCons [load i32 char 8 2, tail]
+    setRegVal loc $ call strCons [unpackInt char, tail]
 makeOp loc LStrIndex [strReg, idxReg] = do
     str <- getRegVal strReg
     idx <- getRegVal idxReg
     strIndex <- asks strIndexFn
-    setRegVal loc $ call strIndex [str, load i32 idx 8 2]
+    setRegVal loc $ call strIndex [str, unpackInt idx]
 makeOp loc LStrRev [strReg] = do
     str <- getRegVal strReg
     strRev <- asks strRevFn
@@ -1529,7 +1531,7 @@ makeOp loc LStrSubstr [offsetReg, lengthReg, strReg] = do
     off <- getRegVal offsetReg
     len <- getRegVal lengthReg
     strSubstr <- asks strSubstrFn
-    setRegVal loc $ call strSubstr [str, load i32 off 8 2, load i32 len 8 2]
+    setRegVal loc $ call strSubstr [str, unpackInt off, unpackInt len]
 makeOp loc LWriteStr [_, reg] = do
     str <- getRegVal reg
     strWrite <- asks strWriteFn
@@ -1563,7 +1565,7 @@ i32BinOp loc op [l, r] = do
     left <- getRegVal l
     right <- getRegVal r
     ctor <- genInt
-    setRegVal loc $ ctor $ op (load i32 left 8 2) (load i32 right 8 2)
+    setRegVal loc $ ctor $ op (unpackInt left) (unpackInt right)
 
 i32BitBinOp :: Reg
     -> (GenFun (Proxy I32) -> GenFun (Proxy I32) -> GenFun (Proxy I32))
@@ -1681,19 +1683,13 @@ makeConst (B16 w) = makeIntConst w
 makeConst (B32 w) = asAddr $ addToConstSection (mkBit32 w)
 makeConst (B64 w) = asAddr $ addToConstSection (mkBit64 w)
 makeConst c
-    | isTypeConst c = asAddr $ addToConstSection (mkInt 42424242)
+    | isTypeConst c = makeIntConst 42424242
     | otherwise = error $ "mkConst of (" ++ show c ++ ") not implemented"
 
 makeIntConst :: (Integral i) => i -> WasmGen (GenFun (Proxy I32))
-makeIntConst val = do
-    let i = fromIntegral val
-    cache <- gets intCache
-    case Map.lookup i cache of
-        Just addr -> return $ i32c addr
-        Nothing -> do
-            addr <- addToConstSection (mkInt i)
-            modify $ \st -> st { intCache = Map.insert i addr cache }
-            return $ i32c addr
+makeIntConst val = return $ do
+    appendExpr [I32Const $ ((asWord32 $ fromIntegral val) `shift` 1) + 1]
+    return Proxy
 
 aligned :: (Integral i) => i -> Word32
 aligned sz = (fromIntegral sz + 3) .&. 0xFFFFFFFC
@@ -1713,7 +1709,6 @@ addToConstSection val = do
 
 data ValType
     = Con
-    | Int
     | BigInt
     | Float
     | String
@@ -1746,26 +1741,11 @@ instance Serialize.Serialize ValHeader where
         sz <- Serialize.getWord32le
         return $ VH { ty, slot8, slot16, sz }
 
-data IntVal = IV { hdr :: ValHeader, val :: Int } deriving (Show, Eq)
-
-mkInt :: (Integral i) => i -> IntVal
-mkInt val = IV { hdr = mkHdr Int 12, val = fromIntegral val }
-
 genInt :: (Producer val, OutType val ~ Proxy I32) => WasmGen (val -> GenFun (Proxy I32))
-genInt = do
-    alloc <- asks allocFn
-    tmp <- asks tmpIdx
-    return $ \val -> do
-        tmp .= call alloc [arg $ i32c (8 + 4)]
-        store8 tmp (i32c $ fromEnum Int) 0 0
-        store tmp val 8 2
-        ret tmp
+genInt = return $ \val -> (val `shl` i32c 1) `add` i32c 1
 
-instance Serialize.Serialize IntVal where
-    put IV { hdr, val } = do
-        Serialize.put hdr
-        Serialize.putWord32le $ asWord32 $ fromIntegral val
-    get = IV <$> Serialize.get <*> (fromIntegral . asInt32 <$> Serialize.getWord32le)
+unpackInt :: GenFun (Proxy I32) -> GenFun (Proxy I32)
+unpackInt val = val `shr_s` i32c 1
 
 data FloatVal = FV { hdr :: ValHeader, val :: Double } deriving (Show, Eq)
 

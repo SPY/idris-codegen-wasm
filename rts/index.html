@@ -10,17 +10,25 @@
         
             const ValType = {
                 Con: 0,
-                Int: 1,
-                BigInt: 2,
-                Float: 3,
-                String: 4,
-                StrOffset: 5,
-                Bit32: 6,
-                Bit64: 7,
-                Fwd: 8
+                BigInt: 1,
+                Float: 2,
+                String: 3,
+                StrOffset: 4,
+                Bit32: 5,
+                Bit64: 6,
+                Fwd: 7
             }
         
             function loadValue(addr) {
+                if (addr & 1) {
+                    const val = addr >> 1
+                    return {
+                        type: 'int',
+                        size: 4,
+                        val: val < 0x40000000 ? val : (-1 * (0x7FFFFFFF - val + 1)),
+                        addr
+                    }
+                }
                 const size = mem.getUint32(addr + 4, true)
                 switch (mem.getUint8(addr)) {
                     case ValType.Con:
@@ -37,8 +45,6 @@
                             values,
                             arity
                         }
-                    case ValType.Int:
-                        return { type: 'int', size, val: mem.getInt32(addr + 8, true), addr }
                     case ValType.Bit32:
                         return { type: 'bit32', size, val: mem.getInt32(addr + 8, true), addr }
                     case ValType.Bit64:
@@ -107,13 +113,16 @@
                     // constant section
                     return addr
                 }
+                if (addr & 1) {
+                    // native integer
+                    return addr
+                }
                 let newAddr = null
                 switch (mem.getUint8(addr)) {
                     case ValType.Con:
                     case ValType.String:
                         newAddr = copyPlain(addr, mem.getUint32(addr + 4, true))
                         break
-                    case ValType.Int:
                     case ValType.Bit32:
                         newAddr = copyPlain(addr, 12)
                         break
@@ -288,10 +297,12 @@
             }
         
             function makeInt(val) {
-                const addr = wasm.alloc(12)
-                mem.setUint8(addr, ValType.Int)
-                mem.setInt32(addr + 8, val, true)
-                return addr
+                if (val >= 0) {
+                    return val << 1 + 1
+                }
+                else {
+                    return (0xFFFFFFFF - Math.abs(val) + 1) << 1 + 1
+                }
             }
 
             function makeDouble(val) {
