@@ -75,6 +75,15 @@
                             val: readString(addr + 12, len),
                             addr
                         }
+                    case ValType.StrOffset:
+                        return {
+                            type: 'str-offset',
+                            size,
+                            base: loadValue(mem.getUint32(addr + 8, true)),
+                            byteOffset: mem.getUint32(addr + 12, true),
+                            charOffset: mem.getUint32(addr + 16, true),
+                            addr
+                        }
                     case ValType.Fwd:
                         return {
                             type: 'forward',
@@ -88,8 +97,15 @@
             }
         
             function loadString(addr) {
-                const len = mem.getUint32(addr + 8, true)
-                return readString(addr + 12, len)
+                if (mem.getUint8(addr) === ValType.String) {
+                    const len = mem.getUint32(addr + 8, true)
+                    return readString(addr + 12, len)
+                }
+                // str offset
+                const base = mem.getUint32(addr + 8, true)
+                const byteOffset = mem.getUint32(addr + 12, true)
+                const len = mem.getUint32(base + 8, true) - mem.getUint32(addr + 16, true)
+                return readString(base + 12 + byteOffset, len)
             }
         
             function aligned(size) {
@@ -123,6 +139,9 @@
                     case ValType.String:
                         newAddr = copyPlain(addr, mem.getUint32(addr + 4, true))
                         break
+                    case ValType.StrOffset:
+                        newAddr = copyPlain(addr, 20)
+                        break
                     case ValType.Bit32:
                         newAddr = copyPlain(addr, 12)
                         break
@@ -153,6 +172,10 @@
                                 const offset = addr + 12 + i * 4
                                 mem.setUint32(offset, copy(mem.getUint32(offset, true)), true)
                             }
+                            break
+                        }
+                        case ValType.StrOffset: {
+                            mem.setUint32(addr + 8, copy(mem.getUint32(addr + 8, true)), true)
                             break
                         }
                     }

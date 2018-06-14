@@ -149,6 +149,8 @@ mkWasm defs stackSize heapSize =
                     for (j .= i32c 0) (j `lt_u` arity) (inc 1 j) $ do
                         offset .= i `add` (j `mul` i32c 4)
                         store offset (call copy [load i32 offset 12 2]) 12 2
+                when (load8_u i32 i 0 0 `eq` i32c (fromEnum StrOffset)) $ do
+                    store i (call copy [load i32 i 8 2]) 8 2
                 i .= i `add` call aligned [load i32 i 4 2]
         implement gc $ do
             requestedSize <- param i32
@@ -203,7 +205,23 @@ mkWasm defs stackSize heapSize =
                 store8 tmpReg (i32c $ fromEnum String) 0 0
                 store tmpReg len 8 2
                 ret tmpReg
-        let packInt :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
+            packStrOffset :: (
+                    Producer addr, OutType addr ~ Proxy I32,
+                    Producer byteOff, OutType byteOff ~ Proxy I32,
+                    Producer charOff, OutType charOff ~ Proxy I32
+                )
+                => addr
+                -> byteOff
+                -> charOff
+                -> GenFun (Proxy I32)
+            packStrOffset str byteOffset charOffset = do
+                tmpReg .= call alloc [i32c 20]
+                store8 tmpReg (i32c $ fromEnum StrOffset) 0 0
+                store tmpReg str 8 2
+                store tmpReg byteOffset 12 2
+                store tmpReg charOffset 16 2
+                ret tmpReg
+            packInt :: (Producer a, OutType a ~ Proxy I32) => a -> GenFun (Proxy I32)
             packInt val = (val `shl` i32c 1) `add` i32c 1
         strConcat <- fun i32 $ do
             a <- param i32
@@ -212,12 +230,12 @@ mkWasm defs stackSize heapSize =
             bSize <- local i32
             addr <- local i32
             len <- local i32
-            aSize .= load i32 a 4 2
-            bSize .= load i32 b 4 2
-            len .= load i32 a 8 2 `add` load i32 b 8 2
-            addr .= packString (aSize `add` bSize `sub` i32c 12) len
-            call memcpy [arg (addr `add` i32c 12), arg (a `add` i32c 12), arg (aSize `sub` i32c 12)]
-            call memcpy [arg (addr `add` aSize), arg (b `add` i32c 12), arg (bSize `sub` i32c 12)]
+            aSize .= getStrSize a
+            bSize .= getStrSize b
+            len .= getStrLen a `add` getStrLen b
+            addr .= packString (aSize `add` bSize `add` i32c 12) len
+            call memcpy [arg (addr `add` i32c 12), arg (getRawStr a), arg aSize]
+            call memcpy [arg (addr `add` i32c 12 `add` aSize), arg (getRawStr b), arg bSize]
             ret addr
         readChar <- fun i32 $ do
             addr <- param i32
@@ -256,7 +274,7 @@ mkWasm defs stackSize heapSize =
         strIndex <- fun i32 $ do
             addr <- param i32
             idx <- param i32
-            call readChar [call strOffset [arg $ addr `add` i32c 12, arg idx]]
+            call readChar [call strOffset [arg $ getRawStr addr, arg idx]]
         strSubstr <- fun i32 $ do
             addr <- param i32
             offset <- param i32
@@ -264,12 +282,27 @@ mkWasm defs stackSize heapSize =
             start <- local i32
             end <- local i32
             size <- local i32
-            start .= call strOffset [arg $ addr `add` i32c 12, arg offset]
-            end .= call strOffset [arg start, arg length]
-            size .= end `sub` start
-            addr .= packString (size `add` i32c 12) length
-            call memcpy [arg (addr `add` i32c 12), arg start, arg size]
-            ret addr
+            base <- local i32
+            byteOff <- local i32
+            charOff <- local i32
+            if' i32 ((offset `add` length) `ge_u` getStrLen addr)
+                -- this is suffix of string
+                (do
+                    base .= if' i32 (isString addr) (ret addr) (load i32 addr 8 2)
+                    byteOff .= (call strOffset [arg $ getRawStr addr, arg offset]) `sub` (getRawStr addr)
+                    when (eqz $ isString addr) $ do -- add byte offset from source StrOffset
+                        byteOff .= load i32 addr 12 2 `add` byteOff
+                    charOff .= if' i32 (isString addr) (ret offset) (load i32 addr 16 2 `add` offset)
+                    packStrOffset base byteOff charOff
+                )
+                (do
+                    start .= call strOffset [arg $ getRawStr addr, arg offset]
+                    end .= call strOffset [arg start, arg length]
+                    size .= end `sub` start
+                    addr .= packString (size `add` i32c 12) length
+                    call memcpy [arg (addr `add` i32c 12), arg start, arg size]
+                    ret addr
+                )
         strEq <- fun i32 $ do
             a <- param i32
             b <- param i32
@@ -277,15 +310,15 @@ mkWasm defs stackSize heapSize =
             curA <- local i32
             curB <- local i32
             end <- local i32
-            size .= load i32 a 4 2
+            size .= getStrSize a
             if' i32 (a `eq` b)
                 (i32c 1)
-                (if' i32 (size `ne` load i32 b 4 2)
+                (if' i32 (size `ne` getStrSize b)
                     (i32c 0)
                     (do
-                        curA .= a `add` i32c 12
-                        curB .= b `add` i32c 12
-                        end .= a `add` size
+                        curA .= getRawStr a
+                        curB .= getRawStr b
+                        end .= curA `add` size
                         while (curA `lt_u` end) $ do
                             when (load8_u i32 curA 0 0 `ne` load8_u i32 curB 0 0)
                                 (finish $ i32c 0)
@@ -300,13 +333,13 @@ mkWasm defs stackSize heapSize =
             i <- local i32
             j <- local i32
             end <- local i32
-            i .= load i32 a 4 2
-            j .= load i32 b 4 2
-            end .= a `add` (if' i32 (i `lt_u` j) (ret i) (ret j))
-            for (i .= a `add` i32c 12 >> j .= b `add` i32c 12) (i `lt_u` end) (inc 1 i >> inc 1 j) $ do
+            i .= getStrSize a
+            j .= getStrSize b
+            end .= getRawStr a `add` (if' i32 (i `lt_u` j) (ret i) (ret j))
+            for (i .= getRawStr a >> j .= getRawStr b) (i `lt_u` end) (inc 1 i >> inc 1 j) $ do
                 when (load8_u i32 i 0 0 `lt_u` load8_u i32 j 0 0) $ finish $ i32c 1
                 when (load8_u i32 i 0 0 `gt_u` load8_u i32 j 0 0) $ finish $ i32c 0
-            load i32 a 4 2 `lt_u` load i32 b 4 2
+            getStrSize a `lt_u` getStrSize b
         charWidth <- fun i32 $ do
             code <- param i32
             if' i32 (code `lt_u` i32c 0x80)
@@ -350,11 +383,11 @@ mkWasm defs stackSize heapSize =
             size <- local i32
             len <- local i32
             width .= call charWidth [arg char]
-            size .= load i32 tail 4 2
-            len .= load i32 tail 8 2 `add` i32c 1
-            res .= packString (size `add` width) len
+            size .= getStrSize tail
+            len .= getStrLen tail `add` i32c 1
+            res .= packString (size `add` i32c 12 `add` width) len
             call storeChar [arg $ res `add` i32c 12, arg char]
-            call memcpy [res `add` i32c 12 `add` width, tail `add` i32c 12, size `sub` i32c 12]
+            call memcpy [arg $ res `add` i32c 12 `add` width, arg $ getRawStr tail, arg size]
             ret res
         strRev <- fun i32 $ do
             addr <- param i32
@@ -362,11 +395,11 @@ mkWasm defs stackSize heapSize =
             res <- local i32
             width <- local i32
             next <- local i32
-            len .= load i32 addr 8 2
-            res .= packString (load i32 addr 4 2) len
-            store8 res (load i32 addr 1 2) 1 0
-            next .= res `add` load i32 addr 4 2
-            addr .= addr `add` i32c 12
+            len .= getStrLen addr
+            res .= packString (getStrSize addr `add` i32c 12) len
+            store8 res (len `gt_u` i32c 0) 1 0
+            next .= res `add` i32c 12 `add` getStrSize addr
+            addr .= getRawStr addr
             while (len `ne` i32c 0) $ do
                 width .= call strOffset [arg addr, arg $ i32c 1] `sub` addr
                 next .= next `sub` width
@@ -425,17 +458,19 @@ mkWasm defs stackSize heapSize =
             char <- local i32
             next <- local i32
             val <- local i32
-            len .= load i32 strAddr 8 2
+            addr <- local i32
+            len .= getStrLen strAddr
+            addr .= getRawStr strAddr
             when (len `le_s` i32c 0) $ finish $ packInt (i32c 0)
             let (zero, nine, plus, minus) = (i32c 48, i32c 57, i32c 43, i32c 45)
-            char .= load8_u i32 strAddr 12 0
+            char .= load8_u i32 addr 0 0
             let isSign ch = (ch `eq` minus) `or` (ch `eq` plus)
             val .= i32c 0
             for (next .= if' i32 (isSign char) (i32c 1) (i32c 0)) (next `lt_u` len) (inc 1 next) $ do
-                char .= load8_u i32 (strAddr `add` next) 12 0
+                char .= load8_u i32 (addr `add` next) 0 0
                 when ((char `lt_u` zero) `or` (char `gt_u` nine)) $ finish $ packInt $ i32c 0
                 val .= (val `mul` i32c 10) `add` (char `sub` zero)
-            let sign = if' i32 (load8_u i32 strAddr 12 0 `eq` minus) (i32c (-1)) (i32c 1)
+            let sign = if' i32 (load8_u i32 addr 0 0 `eq` minus) (i32c (-1)) (i32c 1)
             packInt (sign `mul` val)
         strInt64 <- fun i64 $ do
             strAddr <- param i32
@@ -443,17 +478,19 @@ mkWasm defs stackSize heapSize =
             char <- local i64
             next <- local i32
             val <- local i64
-            len .= load i32 strAddr 8 2
+            addr <- local i32
+            len .= getStrLen strAddr
+            addr .= getRawStr strAddr
             when (len `le_s` i32c 0) $ finish $ i64c 0
             let (zero, nine, plus, minus) = (i64c 48, i64c 57, i64c 43, i64c 45)
-            char .= load8_u i64 strAddr 12 0
+            char .= load8_u i64 addr 0 0
             let isSign ch = (ch `eq` minus) `or` (ch `eq` plus)
             val .= i64c 0
             for (next .= if' i32 (isSign char) (i32c 1) (i32c 0)) (next `lt_u` len) (inc 1 next) $ do
-                char .= load8_u i64 (strAddr `add` next) 12 0
+                char .= load8_u i64 (addr `add` next) 0 0
                 when ((char `lt_u` zero) `or` (char `gt_u` nine)) $ finish $ i64c 0
                 val .= (val `mul` i64c 10) `add` (char `sub` zero)
-            let sign = if' i64 (load8_u i64 strAddr 12 0 `eq` minus) (i64c (-1)) (i64c 1)
+            let sign = if' i64 (load8_u i64 addr 0 0 `eq` minus) (i64c (-1)) (i64c 1)
             sign `mul` val
         symbols <- Map.fromList <$> mapM (\(name, _) -> declare () [I32] >>= (\fn -> return (name, fn))) defs
         let bindings = GB {
@@ -1557,15 +1594,15 @@ makeOp loc LStrEq [l, r] = do
 makeOp loc LStrLen [reg] = do
     strAddr <- getRegVal reg
     ctor <- genInt
-    setRegVal loc $ ctor $ load i32 strAddr 8 2
+    setRegVal loc $ ctor $ getStrLen strAddr
 makeOp loc LStrHead [reg] = do
     str <- getRegVal reg
     readChar <- asks readCharFn
-    setRegVal loc $ call readChar [str `add` i32c 12]
+    setRegVal loc $ call readChar [getRawStr str]
 makeOp loc LStrTail [reg] = do
     str <- getRegVal reg
     strSubstr <- asks strSubstrFn
-    setRegVal loc $ call strSubstr [str, i32c 1, load i32 str 8 2 `sub` i32c 1]
+    setRegVal loc $ call strSubstr [str, i32c 1, getStrLen str `sub` i32c 1]
 makeOp loc LStrCons [charReg, tailReg] = do
     char <- getRegVal charReg
     tail <- getRegVal tailReg
@@ -1826,6 +1863,30 @@ instance Serialize.Serialize FloatVal where
     get = FV <$> Serialize.get <*> Serialize.getFloat64le
 
 data StrVal = SV { hdr :: ValHeader, len :: Word32, val :: LBS.ByteString } deriving (Show, Eq)
+
+isString :: (Producer addr, OutType addr ~ Proxy I32) => addr -> GenFun (Proxy I32)
+isString addr = load8_u i32 addr 0 0 `eq` i32c (fromEnum String)
+
+getStrLen :: (Producer addr, OutType addr ~ Proxy I32) => addr -> GenFun (Proxy I32)
+getStrLen addr = do
+    if' i32 (isString addr)
+        (load i32 addr 8 2)
+        -- else StrOffset
+        (let base = load i32 addr 8 2 in load i32 base 8 2 `sub` load i32 addr 16 2)
+
+getStrSize :: (Producer addr, OutType addr ~ Proxy I32) => addr -> GenFun (Proxy I32)
+getStrSize addr = do
+    if' i32 (isString addr)
+        (load i32 addr 4 2 `sub` i32c 12)
+        -- else StrOffset
+        (let base = load i32 addr 8 2 in load i32 base 4 2 `sub` load i32 addr 12 2 `sub` i32c 12)
+
+getRawStr :: (Producer addr, OutType addr ~ Proxy I32) => addr -> GenFun (Proxy I32)
+getRawStr addr = do
+    if' i32 (isString addr)
+        (addr `add` i32c 12)
+        -- else StrOffset
+        (let base = load i32 addr 8 2 in (base `add` i32c 12) `add` load i32 addr 12 2)
 
 mkStr :: String -> StrVal
 mkStr str =

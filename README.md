@@ -12,10 +12,10 @@
   * [x] Convertions (int to big num, bits to int, etc)
   * [x] Unwrap self-tail calls with LOOP instruction
   * [x] Effective unboxed representation for int and char
+  * [x] Effective substrings representation as StrOffset
 
 ## Todo
   * [ ] BigNum primitives(now they are emulated as WASM i64 number)
-  * [ ] Effective substrings representation as StrOffset
   * [ ] Pass Idris language test suite
   * [ ] FFI and Idris-level support for new back-end
 
