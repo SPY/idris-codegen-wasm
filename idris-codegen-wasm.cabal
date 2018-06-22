@@ -23,7 +23,7 @@ Executable idris-codegen-wasm
                 , transformers
                 , cereal >= 0.5
                 , utf8-string >= 1.0
-                , wasm
+                , wasm >= 1.0
 
   other-modules: IRTS.CodegenWasm
   default-language: Haskell2010
