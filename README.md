@@ -21,12 +21,10 @@
 
 ## Build
 Current implementation fully depends on [haskell-wasm](https://github.com/SPY/haskell-wasm).
-It is not released yet and has unstable user API, but things will change soon.
-To build you need clone [haskell-wasm](https://github.com/SPY/haskell-wasm) and [idris-codegen-wasm](https://github.com/SPY/idris-codegen-wasm)
+To build you need clone [idris-codegen-wasm](https://github.com/SPY/idris-codegen-wasm)
 
 ```
-cd ./haskell-wasm && stack build
-cd ./idris-codegen-wasm && cabal sandbox --init && cabal sandbox add-source ../haskel-wasm && cabal build
+cd ./idris-codegen-wasm && cabal build
 ```
 
 Sample code fully functioning now
